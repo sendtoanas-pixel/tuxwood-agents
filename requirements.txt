@@ -1,0 +1,7 @@
+flask
+gunicorn
+anthropic
+openai
+requests
+pandas
+openpyxl
