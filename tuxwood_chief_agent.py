@@ -14,12 +14,12 @@ import requests
 import pandas as pd
 from datetime import datetime, timedelta
 from collections import Counter
-from gmail_helper import fetch_report_from_gmail
+from gmail_helper import fetch_report_from_gmail, read_sales_report
 
 # ============================================================
 # CONFIG
 # ============================================================
-WHATSAPP_TOKEN  = os.environ.get("WHATSAPP_TOKEN",  "EAAXY3FLEH2kBRFPoozZAYpfstp6bvTsTN27HTQzP9cf8nmcy53ZCz0m9tf2FZB4uqf7VqlgBAlfZCayzs7749Rpr1ojZAdlzENNEwlZBWok2HZALfVpwPTRBSl3Qc6ZBCMpgklyKnFEr4Ho8EWevH6TlumnoikKbihGbSCP1JUIA9uTinfQZCK8yqRzT0iqCfmQZDZD")
+WHATSAPP_TOKEN  = os.environ.get("WHATSAPP_TOKEN",  "")
 PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID", "1127995510386994")
 OWNER_NUMBER    = os.environ.get("OWNER_NUMBER",    "971569394846")
 FOLLOWUP_LOG    = "/tmp/tuxwood_purchase_log.json"
@@ -66,7 +66,6 @@ def main():
     print(f"  Date: {today} | Day: {weekday}")
     print("=" * 60)
 
-    # ── Fetch yesterday's sales report ────────────────────────
     print("\n📧 Fetching sales report from Gmail...")
     report_file = fetch_report_from_gmail()
 
@@ -77,9 +76,10 @@ def main():
 
     if report_file:
         try:
-            df = pd.read_excel(report_file)
+            df = read_sales_report(report_file)
             df = df.dropna(subset=["Customer Name"])
-            df["Mobile Number"] = df["Mobile Number"].apply(format_phone) if "Mobile Number" in df.columns else None
+            if "Mobile Number" in df.columns:
+                df["Mobile Number"] = df["Mobile Number"].apply(format_phone)
             total_orders = len(df)
             if "Net Amount" in df.columns:
                 total_revenue = df["Net Amount"].sum()
@@ -98,14 +98,12 @@ def main():
         except Exception as e:
             sales_summary = f"Report found but error reading: {e}"
 
-    # ── Follow-up log summary ──────────────────────────────────
     log = load_followup_log()
     msgs_yesterday = sum(
         1 for v in log.values()
         if v.get("purchase_date") == yesterday
     )
 
-    # ── Build master message ───────────────────────────────────
     greeting = "Good morning" if datetime.now().hour < 12 else "Good afternoon"
     msg = (
         f"🌿 *Tuxwood Daily Brief — {today}*\n"
