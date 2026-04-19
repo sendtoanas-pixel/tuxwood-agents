@@ -3,20 +3,10 @@ TUXWOOD PERFUMES — AI Sales Chatbot (Ozani)
 ============================================
 Handles incoming WhatsApp & Instagram messages.
 Uses Claude AI with full product knowledge base.
-
-Features:
-  - Answers product questions (prices, notes, descriptions)
-  - Helps find the right fragrance based on preferences
-  - Takes orders and collects delivery details
-  - Escalates to owner WhatsApp if it can't answer
-  - Languages: English + Arabic + Malayalam
-  - Voice note recognition using OpenAI Whisper
+Also handles Aslam approval workflow.
 
 HOW TO RUN:
-  1. Install ngrok: https://ngrok.com/download
-  2. Run: python tuxwood_sales_chatbot.py
-  3. In another terminal: ngrok http 5000
-  4. Copy the ngrok URL and set it as your webhook in Meta Business Manager
+  gunicorn tuxwood_sales_chatbot:app
 """
 
 from flask import Flask, request, jsonify
@@ -30,10 +20,10 @@ from anthropic import Anthropic
 # ============================================================
 # CONFIG — reads from Railway environment variables
 # ============================================================
-WHATSAPP_TOKEN       = os.environ.get("WHATSAPP_TOKEN",      "EAAXY3FLEH2kBRFQInkSZC7DnYkgRB1CmkFRmZBbhztgtGy8BLzapcLJgreFQhUWOezUL2tC6m60kqDNjRo4xyLNhvh1e0QwGkycjhp2IyAw1trm7V4afaNvxhjUyZAp2YihXJvdLjDMaGjL6AkJZCBOu4LCAHaGY2k1ZAXpIIqygaRVQvB9uGpZBoZAr2W69QZDZD")
+WHATSAPP_TOKEN       = os.environ.get("WHATSAPP_TOKEN",      "")
 PHONE_NUMBER_ID      = os.environ.get("PHONE_NUMBER_ID",     "1127995510386994")
-ANTHROPIC_API_KEY    = os.environ.get("ANTHROPIC_API_KEY",   "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")
-OPENAI_API_KEY       = os.environ.get("OPENAI_API_KEY",      "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")
+ANTHROPIC_API_KEY    = os.environ.get("ANTHROPIC_API_KEY",   "")
+OPENAI_API_KEY       = os.environ.get("OPENAI_API_KEY",      "")
 WEBHOOK_VERIFY_TOKEN = os.environ.get("WEBHOOK_VERIFY_TOKEN","tuxwood_webhook_2026")
 OWNER_WHATSAPP       = os.environ.get("OWNER_WHATSAPP",      "971528903429")
 OWNER_WHATSAPP_2     = os.environ.get("OWNER_WHATSAPP_2",    "971569394846")
@@ -43,8 +33,13 @@ INSTAGRAM_TOKEN      = WHATSAPP_TOKEN
 app = Flask(__name__)
 client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
-# In-memory conversation history per user (phone/instagram_id → messages list)
+# In-memory conversation history per user
 conversations = {}
+
+# ── ASLAM APPROVAL STORAGE ────────────────────────────────────
+# Stores pending messages waiting for owner YES/NO
+aslam_pending = []
+# ─────────────────────────────────────────────────────────────
 
 # ── TUXWOOD FULL KNOWLEDGE BASE ──────────────────────────────
 KNOWLEDGE_BASE = """
@@ -76,7 +71,7 @@ CATEGORY: EXOTIC (65ml — AED 89)
 
 3. Oud Al Dahab | 65ml | AED 89
    Notes: Leather → Agarwood, Lavender → Patchouli, Musk
-   Description: Pure luxury oud with leather warmth. Royal, deep, traditional yet modern. Similar to Hind Al Oud.
+   Description: Pure luxury oud with leather warmth. Royal, deep, traditional yet modern.
    Best For: Evenings, Special occasions, Winter | Gender: Masculine | Longevity: 10+ hrs
 
 4. Royal Velvet | 65ml | AED 89
@@ -111,7 +106,7 @@ CATEGORY: EXOTIC (65ml — AED 89)
 
 10. Enigma | 65ml | AED 89
     Notes: Litchi, Rhubarb, Bergamot → Turkish Rose, Peony → Vanilla, Cashmeran, Incense, Cedar
-    Description: Mysterious and seductive. Slowly unfolds and keeps people curious. Similar to Parfums de Marly Delina.
+    Description: Mysterious and seductive. Slowly unfolds and keeps people curious.
     Best For: Evenings, Parties, Dates | Gender: Unisex | Longevity: 7–9 hrs
 
 11. Manly | 65ml | AED 89
@@ -121,12 +116,12 @@ CATEGORY: EXOTIC (65ml — AED 89)
 
 12. Ockacho | 65ml | AED 89
     Notes: Violet Leaf, Bergamot, Coriander → Rose, Black Pepper, Lily of the Valley → Patchouli, Ambergris, Bourbon Vanilla
-    Description: Elegant and mysterious. Fresh green then warm and slightly sweet. Artistic and luxurious.
+    Description: Elegant and mysterious. Fresh green then warm and slightly sweet.
     Best For: Evening, Special occasions | Gender: Unisex | Longevity: 8–9 hrs | Fast luxury seller
 
 13. Sage | 65ml | AED 89
     Notes: Blackcurrant, Bergamot, Lemon, Pineapple → Rose, Moroccan Jasmine, Dry Birch → Patchouli, Oakmoss, Musk, Ambergris, Cedar, Vanilla
-    Description: Fresh, green, confident with refined masculine edge. Bright fruity then woody-musky.
+    Description: Fresh, green, confident with refined masculine edge.
     Best For: Office, Daily wear, All seasons | Gender: Masculine | Longevity: 8–10 hrs
 
 ============================
@@ -309,7 +304,6 @@ If customer says delivery not received, wrong item, or any complaint:
 "I'm sorry to hear that 🙏 Our team will sort this out for you right away.
 Please contact us directly:
 +971 52 890 3429 or +971 56 939 4846"
-→ Also internally flag this as a complaint so the team is notified.
 
 If customer asks about delivery status or tracking:
 "For delivery updates, please reach our team directly:
@@ -320,8 +314,7 @@ They'll give you the latest update right away."
 AVOID DUPLICATE MESSAGES
 ━━━━━━━━━━━━━━━━━━━━━━
 - NEVER send the same message twice to the same customer
-- If customer asks the same question again, give a shorter refreshed answer — not a copy
-- If you already gave delivery info, don't repeat it unless specifically asked again
+- If customer asks the same question again, give a shorter refreshed answer
 - Track conversation context and never repeat what was already said
 
 ━━━━━━━━━━━━━━━━━━━━━━
@@ -336,16 +329,13 @@ If you truly can't answer:
 # ── VOICE NOTE HELPERS ───────────────────────────────────────
 
 def download_whatsapp_audio(media_id):
-    """Download audio file from WhatsApp."""
     try:
-        # Get media URL
         url = f"https://graph.facebook.com/v18.0/{media_id}"
         headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
         r = requests.get(url, headers=headers)
         media_url = r.json().get("url")
         if not media_url:
             return None
-        # Download the audio
         audio_response = requests.get(media_url, headers=headers)
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".ogg")
         tmp.write(audio_response.content)
@@ -357,7 +347,6 @@ def download_whatsapp_audio(media_id):
 
 
 def transcribe_audio(audio_path):
-    """Transcribe audio using OpenAI Whisper — supports English, Arabic, Malayalam."""
     try:
         from openai import OpenAI
         openai_client = OpenAI(api_key=OPENAI_API_KEY)
@@ -366,7 +355,7 @@ def transcribe_audio(audio_path):
                 model="whisper-1",
                 file=audio_file,
             )
-        os.unlink(audio_path)  # Clean up temp file
+        os.unlink(audio_path)
         return transcript.text
     except Exception as e:
         print(f"❌ Transcription error: {e}")
@@ -376,14 +365,11 @@ def transcribe_audio(audio_path):
 # ── MESSAGE HELPERS ───────────────────────────────────────────
 
 def get_ai_response(user_id, user_message):
-    """Get Claude AI response with conversation history."""
     if user_id not in conversations:
         conversations[user_id] = []
 
-    # Add user message to history
     conversations[user_id].append({"role": "user", "content": user_message})
 
-    # Keep last 20 messages only
     if len(conversations[user_id]) > 20:
         conversations[user_id] = conversations[user_id][-20:]
 
@@ -395,10 +381,7 @@ def get_ai_response(user_id, user_message):
             messages=conversations[user_id]
         )
         reply = response.content[0].text.strip()
-
-        # Add assistant reply to history
         conversations[user_id].append({"role": "assistant", "content": reply})
-
         return reply
     except Exception as e:
         print(f"Claude API error: {e}")
@@ -406,7 +389,6 @@ def get_ai_response(user_id, user_message):
 
 
 def send_whatsapp(to, message):
-    """Send WhatsApp message."""
     url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
     headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
     payload = {
@@ -420,7 +402,6 @@ def send_whatsapp(to, message):
 
 
 def send_instagram_reply(recipient_id, message):
-    """Send Instagram DM reply."""
     url = f"https://graph.facebook.com/v18.0/me/messages"
     headers = {"Authorization": f"Bearer {INSTAGRAM_TOKEN}", "Content-Type": "application/json"}
     payload = {
@@ -432,7 +413,6 @@ def send_instagram_reply(recipient_id, message):
 
 
 def notify_owner(customer_id, customer_message, platform):
-    """Notify owner on WhatsApp when escalation is needed."""
     alert = (
         f"⚠️ TUXWOOD CHATBOT ESCALATION\n\n"
         f"Platform: {platform}\n"
@@ -444,11 +424,94 @@ def notify_owner(customer_id, customer_message, platform):
     send_whatsapp(OWNER_WHATSAPP_2, alert)
 
 
+# ── ASLAM APPROVAL HELPERS ────────────────────────────────────
+
+def is_owner(phone):
+    """Check if the sender is the owner."""
+    return phone in [OWNER_WHATSAPP, OWNER_WHATSAPP_2]
+
+
+def handle_aslam_approval(answer, owner_phone):
+    """Process owner YES/NO reply for Aslam pending messages."""
+    global aslam_pending
+
+    if not aslam_pending:
+        send_whatsapp(owner_phone, "📭 No pending Aslam messages to process.")
+        return
+
+    count = len(aslam_pending)
+
+    if answer == "YES":
+        sent = 0
+        failed = 0
+        for item in aslam_pending:
+            code = send_whatsapp(item["phone"], item["message"])
+            if code == 200:
+                sent += 1
+            else:
+                failed += 1
+
+        aslam_pending = []
+        send_whatsapp(owner_phone,
+            f"✅ *Aslam — Done!*\n"
+            f"📤 {sent} messages sent\n"
+            f"❌ {failed} failed\n\n"
+            f"🤖 Aslam — Follow-up Agent"
+        )
+        print(f"✅ Aslam: {sent} messages sent after owner approval")
+
+    elif answer == "NO":
+        aslam_pending = []
+        send_whatsapp(owner_phone,
+            f"🚫 *Aslam — Cancelled*\n"
+            f"{count} messages were NOT sent.\n\n"
+            f"🤖 Aslam — Follow-up Agent"
+        )
+        print("🚫 Aslam: messages cancelled by owner")
+
+
+# ── ASLAM PREVIEW ENDPOINT ────────────────────────────────────
+
+@app.route("/aslam/preview", methods=["POST"])
+def aslam_preview():
+    """
+    Receives pending messages from Shahan (purchase agent).
+    Sends a preview to owner WhatsApp and waits for YES/NO.
+    """
+    global aslam_pending
+
+    data = request.get_json()
+    pending = data.get("pending", [])
+
+    if not pending:
+        return jsonify({"status": "no messages"}), 200
+
+    aslam_pending = pending
+    count = len(pending)
+
+    # Build preview message for owner
+    preview = f"📱 *Aslam — Approval Required*\n{'━'*28}\n"
+    preview += f"*{count} message(s) ready to send:*\n\n"
+
+    for i, item in enumerate(pending[:10], 1):  # show max 10
+        mtype = "👋 Thank you" if item.get("type") == "day1_thankyou" else "⭐ Review request"
+        preview += f"{i}. {item['name']} — {mtype}\n"
+
+    if count > 10:
+        preview += f"... and {count - 10} more\n"
+
+    preview += f"\nReply *YES* to send all\nReply *NO* to cancel\n\n🤖 Aslam — Follow-up Agent"
+
+    send_whatsapp(OWNER_WHATSAPP_2, preview)
+    print(f"📤 Aslam preview sent to owner: {count} messages pending approval")
+
+    return jsonify({"status": "preview sent", "count": count}), 200
+
+
 # ── WEBHOOK ROUTES ────────────────────────────────────────────
 
 @app.route("/webhook", methods=["GET"])
 def verify_webhook():
-    """Meta webhook verification."""
     mode      = request.args.get("hub.mode")
     token     = request.args.get("hub.verify_token")
     challenge = request.args.get("hub.challenge")
@@ -461,7 +524,6 @@ def verify_webhook():
 
 @app.route("/webhook", methods=["POST"])
 def handle_webhook():
-    """Handle incoming WhatsApp & Instagram messages."""
     data = request.get_json()
     print(f"\n📨 Incoming webhook: {json.dumps(data, indent=2)[:500]}")
 
@@ -478,22 +540,19 @@ def handle_webhook():
 
             user_text = None
 
-            # ── Text message ─────────────────────────────
             if msg_type == "text":
                 user_text = message["text"]["body"]
                 print(f"💬 WhatsApp from {from_number}: {user_text}")
 
-            # ── Voice note ───────────────────────────────
             elif msg_type in ["audio", "voice"]:
                 media_id = message.get("audio", message.get("voice", {})).get("id")
                 print(f"🎤 Voice note from {from_number} — transcribing...")
-                if media_id and OPENAI_API_KEY != "PASTE_YOUR_OPENAI_API_KEY_HERE":
+                if media_id and OPENAI_API_KEY:
                     audio_path = download_whatsapp_audio(media_id)
                     if audio_path:
                         user_text = transcribe_audio(audio_path)
                         if user_text:
                             print(f"📝 Transcribed: {user_text}")
-                            # Let customer know we heard them
                             send_whatsapp(from_number, "🎤 Got your voice note!")
                         else:
                             send_whatsapp(from_number, "Sorry, I couldn't hear that clearly. Could you type your message? 🙏")
@@ -502,12 +561,17 @@ def handle_webhook():
                 else:
                     send_whatsapp(from_number, "Sorry, voice notes aren't set up yet. Please type your message 🙏")
 
-            # ── Catalogue request keywords ────────────────
-            catalogue_keywords = ["catalogue", "catalog", "catalog", "products", "all perfumes",
-                                  "product list", "كتالوج", "منتجات", "കാറ്റലോഗ്", "പ്രൊഡക്ട്"]
-
             if user_text:
-                # Check for catalogue request
+                # ── OWNER YES/NO for Aslam approval ──────────
+                if is_owner(from_number) and aslam_pending:
+                    answer = user_text.strip().upper()
+                    if answer in ["YES", "NO"]:
+                        handle_aslam_approval(answer, from_number)
+                        return jsonify({"status": "ok"}), 200
+
+                # ── Catalogue keywords ────────────────────────
+                catalogue_keywords = ["catalogue", "catalog", "products", "all perfumes",
+                                      "product list", "كتالوج", "منتجات", "കാറ്റലോഗ്", "പ്രൊഡക്ട്"]
                 if any(k in user_text.lower() for k in catalogue_keywords):
                     send_whatsapp(from_number,
                         "Here's our full Tuxwood Perfumes catalogue 🌿\n\n"
@@ -516,25 +580,22 @@ def handle_webhook():
                     )
                     return jsonify({"status": "ok"}), 200
 
-                # Get AI response
+                # ── AI response ───────────────────────────────
                 reply = get_ai_response(f"wa_{from_number}", user_text)
 
-                # Check if complaint — notify owner immediately
                 complaint_keywords = ["not received", "didn't receive", "where is my order",
                                       "delivery problem", "wrong item", "complaint", "refund",
-                                      "not delivered", "لم يصل", "شكوى", "مشكلة", "തിരികെ",
+                                      "not delivered", "لم يصل", "شكوى", "مشكلة",
                                       "കിട്ടിയില്ല", "delivery status", "track", "tracking"]
                 if any(k in user_text.lower() for k in complaint_keywords):
                     notify_owner(from_number, f"⚠️ COMPLAINT: {user_text}", "WhatsApp")
 
-                # Check if escalation needed
                 escalate_keywords = ["connect me", "speak to human", "real person", "manager",
                                      "call me", "i need help", "not helpful", "تواصل", "مدير",
                                      "മനുഷ്യൻ", "ആളെ വിളിക്കൂ"]
                 if any(k in user_text.lower() for k in escalate_keywords):
                     notify_owner(from_number, user_text, "WhatsApp")
 
-                # Send reply
                 send_whatsapp(from_number, reply)
                 print(f"✅ Replied to {from_number}")
 
@@ -546,17 +607,13 @@ def handle_webhook():
 
             if msg_text:
                 print(f"💬 Instagram from {sender_id}: {msg_text}")
-
-                # Get AI response
                 reply = get_ai_response(f"ig_{sender_id}", msg_text)
 
-                # Check if escalation needed
                 escalate_keywords = ["connect me", "speak to human", "real person",
                                      "manager", "call me", "تواصل", "مدير"]
                 if any(k in msg_text.lower() for k in escalate_keywords):
                     notify_owner(sender_id, msg_text, "Instagram")
 
-                # Send Instagram reply
                 send_instagram_reply(sender_id, reply)
                 print(f"✅ Replied to Instagram {sender_id}")
 
@@ -568,24 +625,19 @@ def handle_webhook():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "Tuxwood Chatbot is running! 🌿", "time": datetime.now().isoformat()})
+    return jsonify({
+        "status": "Tuxwood Chatbot is running! 🌿",
+        "time": datetime.now().isoformat(),
+        "aslam_pending": len(aslam_pending)
+    })
 
 
 # ── MAIN ──────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("  TUXWOOD PERFUMES — AI Sales Chatbot")
-    print("  Platforms: WhatsApp + Instagram")
+    print("  TUXWOOD PERFUMES — AI Sales Chatbot (Ozani)")
     print(f"  Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("=" * 60)
-    print("\n📋 SETUP CHECKLIST:")
-    print("  1. ✅ Script running on port 5000")
-    print("  2. ⏳ Run ngrok: ngrok http 5000")
-    print("  3. ⏳ Set webhook URL in Meta Business Manager:")
-    print("     https://YOUR-NGROK-URL/webhook")
-    print(f"  4. ⏳ Verify Token: {WEBHOOK_VERIFY_TOKEN}")
-    print("\n🌐 Health check: http://localhost:5000/health")
     print("=" * 60)
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)
