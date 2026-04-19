@@ -375,8 +375,8 @@ def get_ai_response(user_id, user_message):
 
     try:
         response = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=600,
+           model="claude-haiku-4-5-20251001",
+            max_tokens=250,
             system=SYSTEM_PROMPT,
             messages=conversations[user_id]
         )
