@@ -6,3 +6,5 @@ requests
 pandas
 openpyxl
 pdfplumber
+gspread
+google-auth
