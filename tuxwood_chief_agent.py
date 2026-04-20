@@ -66,6 +66,7 @@ def main():
     print(f"  Date: {today} | Day: {weekday}")
     print("=" * 60)
 
+    # ── Fetch yesterday's sales report ────────────────────────
     print("\n📧 Fetching sales report from Gmail...")
     report_file = fetch_report_from_gmail()
 
@@ -78,8 +79,7 @@ def main():
         try:
             df = read_sales_report(report_file)
             df = df.dropna(subset=["Customer Name"])
-            if "Mobile Number" in df.columns:
-                df["Mobile Number"] = df["Mobile Number"].apply(format_phone)
+            df["Mobile Number"] = df["Mobile Number"].apply(format_phone) if "Mobile Number" in df.columns else None
             total_orders = len(df)
             if "Net Amount" in df.columns:
                 total_revenue = df["Net Amount"].sum()
@@ -98,12 +98,14 @@ def main():
         except Exception as e:
             sales_summary = f"Report found but error reading: {e}"
 
+    # ── Follow-up log summary ──────────────────────────────────
     log = load_followup_log()
     msgs_yesterday = sum(
         1 for v in log.values()
         if v.get("purchase_date") == yesterday
     )
 
+    # ── Build master message ───────────────────────────────────
     greeting = "Good morning" if datetime.now().hour < 12 else "Good afternoon"
     msg = (
         f"🌿 *Tuxwood Daily Brief — {today}*\n"

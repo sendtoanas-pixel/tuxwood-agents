@@ -3,7 +3,20 @@ TUXWOOD PERFUMES — AI Sales Chatbot (Ozani)
 ============================================
 Handles incoming WhatsApp & Instagram messages.
 Uses Claude AI with full product knowledge base.
-Fixes: duplicate message prevention, faster responses.
+
+Features:
+  - Answers product questions (prices, notes, descriptions)
+  - Helps find the right fragrance based on preferences
+  - Takes orders and collects delivery details
+  - Escalates to owner WhatsApp if it can't answer
+  - Languages: English + Arabic + Malayalam
+  - Voice note recognition using OpenAI Whisper
+
+HOW TO RUN:
+  1. Install ngrok: https://ngrok.com/download
+  2. Run: python tuxwood_sales_chatbot.py
+  3. In another terminal: ngrok http 5000
+  4. Copy the ngrok URL and set it as your webhook in Meta Business Manager
 """
 
 from flask import Flask, request, jsonify
@@ -15,7 +28,7 @@ from datetime import datetime
 from anthropic import Anthropic
 
 # ============================================================
-# CONFIG
+# CONFIG — reads from Railway environment variables
 # ============================================================
 WHATSAPP_TOKEN       = os.environ.get("WHATSAPP_TOKEN",      "")
 PHONE_NUMBER_ID      = os.environ.get("PHONE_NUMBER_ID",     "1127995510386994")
@@ -30,10 +43,10 @@ INSTAGRAM_TOKEN      = WHATSAPP_TOKEN
 app = Flask(__name__)
 client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
-conversations    = {}
-aslam_pending    = []
-processed_msgs   = set()  # prevents duplicate replies
+# In-memory conversation history per user (phone/instagram_id → messages list)
+conversations = {}
 
+# ── TUXWOOD FULL KNOWLEDGE BASE ──────────────────────────────
 KNOWLEDGE_BASE = """
 TUXWOOD PERFUMES — COMPLETE PRODUCT CATALOGUE & CHATBOT KNOWLEDGE BASE
 
@@ -63,7 +76,7 @@ CATEGORY: EXOTIC (65ml — AED 89)
 
 3. Oud Al Dahab | 65ml | AED 89
    Notes: Leather → Agarwood, Lavender → Patchouli, Musk
-   Description: Pure luxury oud with leather warmth. Royal, deep, traditional yet modern.
+   Description: Pure luxury oud with leather warmth. Royal, deep, traditional yet modern. Similar to Hind Al Oud.
    Best For: Evenings, Special occasions, Winter | Gender: Masculine | Longevity: 10+ hrs
 
 4. Royal Velvet | 65ml | AED 89
@@ -98,7 +111,7 @@ CATEGORY: EXOTIC (65ml — AED 89)
 
 10. Enigma | 65ml | AED 89
     Notes: Litchi, Rhubarb, Bergamot → Turkish Rose, Peony → Vanilla, Cashmeran, Incense, Cedar
-    Description: Mysterious and seductive. Slowly unfolds and keeps people curious.
+    Description: Mysterious and seductive. Slowly unfolds and keeps people curious. Similar to Parfums de Marly Delina.
     Best For: Evenings, Parties, Dates | Gender: Unisex | Longevity: 7–9 hrs
 
 11. Manly | 65ml | AED 89
@@ -108,12 +121,12 @@ CATEGORY: EXOTIC (65ml — AED 89)
 
 12. Ockacho | 65ml | AED 89
     Notes: Violet Leaf, Bergamot, Coriander → Rose, Black Pepper, Lily of the Valley → Patchouli, Ambergris, Bourbon Vanilla
-    Description: Elegant and mysterious. Fresh green then warm and slightly sweet.
+    Description: Elegant and mysterious. Fresh green then warm and slightly sweet. Artistic and luxurious.
     Best For: Evening, Special occasions | Gender: Unisex | Longevity: 8–9 hrs | Fast luxury seller
 
 13. Sage | 65ml | AED 89
     Notes: Blackcurrant, Bergamot, Lemon, Pineapple → Rose, Moroccan Jasmine, Dry Birch → Patchouli, Oakmoss, Musk, Ambergris, Cedar, Vanilla
-    Description: Fresh, green, confident with refined masculine edge.
+    Description: Fresh, green, confident with refined masculine edge. Bright fruity then woody-musky.
     Best For: Office, Daily wear, All seasons | Gender: Masculine | Longevity: 8–10 hrs
 
 ============================
@@ -170,68 +183,169 @@ DELIVERY & PAYMENT
 - AED 15 charge for single item orders
 """
 
+# ── SYSTEM PROMPT ─────────────────────────────────────────────
 SYSTEM_PROMPT = f"""You are Ozani — the fragrance advisor for Tuxwood Perfumes.
 
 YOUR CORE RULE: "Talk less. Understand more. Guide slowly."
 
-WHO YOU ARE:
+━━━━━━━━━━━━━━━━━━━━━━
+WHO YOU ARE
+━━━━━━━━━━━━━━━━━━━━━━
 You talk like a human, not a bot. Calm, simple, friendly. No pressure, no over-talking.
 If someone asks if you are human or AI — say: "I'm Ozani from Tuxwood Perfumes 🌿"
 
-BASIC RULES — NEVER BREAK:
+━━━━━━━━━━━━━━━━━━━━━━
+BASIC RULES — NEVER BREAK
+━━━━━━━━━━━━━━━━━━━━━━
 - Talk like a human, not a bot
 - Keep replies short and clear
 - Ask ONE question only, then WAIT for reply
-- Never ask more than 2 questions before recommending
-- Max 3-4 lines per reply
+- Never ask more than 2 questions in total before recommending
+- Don't rush the customer
+- If customer is slow → stay calm
+- If customer asks → reply (don't push)
 - No bullet points, no long explanations
+- Max 3-4 lines per reply
 
-CONVERSATION FLOW:
-OPENING: "Welcome to Tuxwood Perfumes 🌿\nI'm Ozani. Are you looking for something for yourself or as a gift?"
+━━━━━━━━━━━━━━━━━━━━━━
+CONVERSATION FLOW
+━━━━━━━━━━━━━━━━━━━━━━
+OPENING (always start here):
+"Welcome to Tuxwood Perfumes 🌿
+I'm Ozani. Are you looking for something for yourself or as a gift?"
 → Then WAIT
 
-AFTER REPLY — ask ONE more question:
+AFTER THEY REPLY — ask only ONE more question:
 "What kind of scent do you like? Strong or soft, fresh, floral, woody, or oud?"
 → Then WAIT
 
-RECOMMENDATION: Mention specific product name and price naturally. Keep it short.
+RECOMMENDATION (after their answer):
+"Based on that, I'd suggest something warm and long-lasting.
+It's perfect for [daily use / occasions] and people will notice it."
+→ Keep it short. Don't explain too much.
+→ Mention specific product name and price naturally.
 
-DELIVERY & PRICING:
-"We deliver across UAE. For 1 item, delivery is AED 15. If you take 2 or more, delivery is FREE."
+━━━━━━━━━━━━━━━━━━━━━━
+IF CUSTOMER IS CONFUSED
+━━━━━━━━━━━━━━━━━━━━━━
+"No problem 🙂
+Tell me one thing — do you want something light or strong?"
+→ Then WAIT
 
-ORDER CONFIRMATION:
-"Perfect, I'll arrange delivery for you. Please share your: Name, Contact number, Address, Perfume name, Quantity, Payment (Cash or Transfer)"
+━━━━━━━━━━━━━━━━━━━━━━
+DELIVERY & PRICING
+━━━━━━━━━━━━━━━━━━━━━━
+If customer asks about delivery:
+"We deliver across UAE.
+For 1 item, delivery is AED 15.
+If you take 2 or more, delivery is FREE."
 
-LANGUAGE RULES:
+If customer asks about price — give direct answer, no long explanation:
+Example: "This one is AED 89."
+
+━━━━━━━━━━━━━━━━━━━━━━
+ORDER CONFIRMATION
+━━━━━━━━━━━━━━━━━━━━━━
+When customer says they want to order:
+"Perfect, I'll arrange delivery for you.
+Please share your:
+Name, Contact number, Location/Address, Perfume name, Quantity, Payment (Cash or Transfer)"
+→ Collect ONE detail at a time, don't ask all at once
+
+━━━━━━━━━━━━━━━━━━━━━━
+SOFT SELL — VERY IMPORTANT
+━━━━━━━━━━━━━━━━━━━━━━
+Never force. Instead say:
+"Let me know if you'd like to try this 🙂"
+
+HUMAN TOUCH LINES (use naturally when appropriate):
+- "This one is really loved by many customers."
+- "You'll like this if you enjoy long-lasting scents."
+- "It's simple but very classy."
+- "Good choice 👍"
+
+━━━━━━━━━━━━━━━━━━━━━━
+LANGUAGE RULES
+━━━━━━━━━━━━━━━━━━━━━━
 - Always reply in the SAME language the customer uses
-- Arabic → reply in Arabic | English → English | Malayalam → Malayalam
+- Arabic → reply fully in warm natural Arabic
+- English → reply in English
+- Malayalam → reply in Malayalam
+- Mixed → match their tone
 
-STORE LOCATION:
-"Our store is in Shabiya 9, Abu Dhabi, UAE 🌿 https://maps.app.goo.gl/Dtn2kW42GdKsPd887"
+━━━━━━━━━━━━━━━━━━━━━━
+STORE LOCATION
+━━━━━━━━━━━━━━━━━━━━━━
+If customer asks about store location or wants to visit:
+"Our store is in Shabiya 9, Abu Dhabi, UAE 🌿
+Here's the location: https://maps.app.goo.gl/Dtn2kW42GdKsPd887"
 
-INDIA / KERALA DELIVERY:
-"Yes! We deliver all over India 🌿 Contact our India team: +91 7907090223"
+━━━━━━━━━━━━━━━━━━━━━━
+INDIA / KERALA DELIVERY
+━━━━━━━━━━━━━━━━━━━━━━
+If customer asks about delivery to India or Kerala:
+"Yes! We deliver all over India 🌿
+You can reach our India team directly: +91 7907090223"
 
-WHOLESALE:
-"Yes, we do wholesale 🌿 Contact: +971 52 890 3429 or +971 56 939 4846"
+━━━━━━━━━━━━━━━━━━━━━━
+WHOLESALE
+━━━━━━━━━━━━━━━━━━━━━━
+If customer asks about wholesale or bulk orders:
+"Yes, we do wholesale to different countries 🌿
+Please contact our team directly:
++971 52 890 3429 or +971 56 939 4846"
 
-COMPLAINT HANDLING:
-"I'm sorry to hear that 🙏 Please contact us directly: +971 52 890 3429 or +971 56 939 4846"
+━━━━━━━━━━━━━━━━━━━━━━
+SPEAK TO SALES TEAM
+━━━━━━━━━━━━━━━━━━━━━━
+If customer wants to speak with someone from the team:
+"Sure! You can reach our team directly:
++971 52 890 3429 or +971 56 939 4846 🌿"
 
-ESCALATION:
+━━━━━━━━━━━━━━━━━━━━━━
+COMPLAINT HANDLING
+━━━━━━━━━━━━━━━━━━━━━━
+If customer says delivery not received, wrong item, or any complaint:
+"I'm sorry to hear that 🙏 Our team will sort this out for you right away.
+Please contact us directly:
++971 52 890 3429 or +971 56 939 4846"
+→ Also internally flag this as a complaint so the team is notified.
+
+If customer asks about delivery status or tracking:
+"For delivery updates, please reach our team directly:
++971 52 890 3429 or +971 56 939 4846 🌿
+They'll give you the latest update right away."
+
+━━━━━━━━━━━━━━━━━━━━━━
+AVOID DUPLICATE MESSAGES
+━━━━━━━━━━━━━━━━━━━━━━
+- NEVER send the same message twice to the same customer
+- If customer asks the same question again, give a shorter refreshed answer — not a copy
+- If you already gave delivery info, don't repeat it unless specifically asked again
+- Track conversation context and never repeat what was already said
+
+━━━━━━━━━━━━━━━━━━━━━━
+ESCALATION
+━━━━━━━━━━━━━━━━━━━━━━
+If you truly can't answer:
 "Let me connect you with our team — they'll reply shortly 🌿"
 
 {KNOWLEDGE_BASE}"""
 
 
+# ── VOICE NOTE HELPERS ───────────────────────────────────────
+
 def download_whatsapp_audio(media_id):
+    """Download audio file from WhatsApp."""
     try:
+        # Get media URL
         url = f"https://graph.facebook.com/v18.0/{media_id}"
         headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
         r = requests.get(url, headers=headers)
         media_url = r.json().get("url")
         if not media_url:
             return None
+        # Download the audio
         audio_response = requests.get(media_url, headers=headers)
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".ogg")
         tmp.write(audio_response.content)
@@ -243,6 +357,7 @@ def download_whatsapp_audio(media_id):
 
 
 def transcribe_audio(audio_path):
+    """Transcribe audio using OpenAI Whisper — supports English, Arabic, Malayalam."""
     try:
         from openai import OpenAI
         openai_client = OpenAI(api_key=OPENAI_API_KEY)
@@ -251,31 +366,39 @@ def transcribe_audio(audio_path):
                 model="whisper-1",
                 file=audio_file,
             )
-        os.unlink(audio_path)
+        os.unlink(audio_path)  # Clean up temp file
         return transcript.text
     except Exception as e:
         print(f"❌ Transcription error: {e}")
         return None
 
 
+# ── MESSAGE HELPERS ───────────────────────────────────────────
+
 def get_ai_response(user_id, user_message):
+    """Get Claude AI response with conversation history."""
     if user_id not in conversations:
         conversations[user_id] = []
 
+    # Add user message to history
     conversations[user_id].append({"role": "user", "content": user_message})
 
+    # Keep last 20 messages only
     if len(conversations[user_id]) > 20:
         conversations[user_id] = conversations[user_id][-20:]
 
     try:
         response = client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=300,
+            max_tokens=600,
             system=SYSTEM_PROMPT,
             messages=conversations[user_id]
         )
         reply = response.content[0].text.strip()
+
+        # Add assistant reply to history
         conversations[user_id].append({"role": "assistant", "content": reply})
+
         return reply
     except Exception as e:
         print(f"Claude API error: {e}")
@@ -283,6 +406,7 @@ def get_ai_response(user_id, user_message):
 
 
 def send_whatsapp(to, message):
+    """Send WhatsApp message."""
     url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
     headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
     payload = {
@@ -296,14 +420,19 @@ def send_whatsapp(to, message):
 
 
 def send_instagram_reply(recipient_id, message):
+    """Send Instagram DM reply."""
     url = f"https://graph.facebook.com/v18.0/me/messages"
     headers = {"Authorization": f"Bearer {INSTAGRAM_TOKEN}", "Content-Type": "application/json"}
-    payload = {"recipient": {"id": recipient_id}, "message": {"text": message}}
+    payload = {
+        "recipient": {"id": recipient_id},
+        "message": {"text": message}
+    }
     r = requests.post(url, headers=headers, json=payload)
     return r.status_code
 
 
 def notify_owner(customer_id, customer_message, platform):
+    """Notify owner on WhatsApp when escalation is needed."""
     alert = (
         f"⚠️ TUXWOOD CHATBOT ESCALATION\n\n"
         f"Platform: {platform}\n"
@@ -315,65 +444,15 @@ def notify_owner(customer_id, customer_message, platform):
     send_whatsapp(OWNER_WHATSAPP_2, alert)
 
 
-def is_owner(phone):
-    return phone in [OWNER_WHATSAPP, OWNER_WHATSAPP_2]
-
-
-def handle_aslam_approval(answer, owner_phone):
-    global aslam_pending
-    if not aslam_pending:
-        send_whatsapp(owner_phone, "📭 No pending Aslam messages to process.")
-        return
-
-    count = len(aslam_pending)
-    if answer == "YES":
-        sent = 0
-        failed = 0
-        for item in aslam_pending:
-            code = send_whatsapp(item["phone"], item["message"])
-            if code == 200:
-                sent += 1
-            else:
-                failed += 1
-        aslam_pending = []
-        send_whatsapp(owner_phone,
-            f"✅ *Aslam — Done!*\n📤 {sent} messages sent\n❌ {failed} failed\n\n🤖 Aslam — Follow-up Agent"
-        )
-    elif answer == "NO":
-        aslam_pending = []
-        send_whatsapp(owner_phone,
-            f"🚫 *Aslam — Cancelled*\n{count} messages were NOT sent.\n\n🤖 Aslam — Follow-up Agent"
-        )
-
-
-@app.route("/aslam/preview", methods=["POST"])
-def aslam_preview():
-    global aslam_pending
-    data = request.get_json()
-    pending = data.get("pending", [])
-    if not pending:
-        return jsonify({"status": "no messages"}), 200
-
-    aslam_pending = pending
-    count = len(pending)
-
-    preview = f"📱 *Aslam — Approval Required*\n{'━'*28}\n*{count} message(s) ready to send:*\n\n"
-    for i, item in enumerate(pending[:10], 1):
-        mtype = "👋 Thank you" if item.get("type") == "day1_thankyou" else "⭐ Review request" if item.get("type") == "day3_review" else "💬 Retention"
-        preview += f"{i}. {item['name']} — {mtype}\n"
-    if count > 10:
-        preview += f"... and {count - 10} more\n"
-    preview += f"\nReply *YES* to send all\nReply *NO* to cancel\n\n🤖 Aslam — Follow-up Agent"
-
-    send_whatsapp(OWNER_WHATSAPP_2, preview)
-    return jsonify({"status": "preview sent", "count": count}), 200
-
+# ── WEBHOOK ROUTES ────────────────────────────────────────────
 
 @app.route("/webhook", methods=["GET"])
 def verify_webhook():
+    """Meta webhook verification."""
     mode      = request.args.get("hub.mode")
     token     = request.args.get("hub.verify_token")
     challenge = request.args.get("hub.challenge")
+
     if mode == "subscribe" and token == WEBHOOK_VERIFY_TOKEN:
         print("✅ Webhook verified!")
         return challenge, 200
@@ -382,40 +461,39 @@ def verify_webhook():
 
 @app.route("/webhook", methods=["POST"])
 def handle_webhook():
+    """Handle incoming WhatsApp & Instagram messages."""
     data = request.get_json()
+    print(f"\n📨 Incoming webhook: {json.dumps(data, indent=2)[:500]}")
 
     try:
-        entry   = data.get("entry", [{}])[0]
+        entry = data.get("entry", [{}])[0]
         changes = entry.get("changes", [{}])[0]
-        value   = changes.get("value", {})
+        value = changes.get("value", {})
 
+        # ── WhatsApp Message ──────────────────────────────────
         if "messages" in value:
-            message     = value["messages"][0]
-            msg_id      = message.get("id", "")
+            message = value["messages"][0]
             from_number = message.get("from")
             msg_type    = message.get("type")
 
-            # ── Duplicate prevention ──────────────────────────
-            if msg_id in processed_msgs:
-                print(f"⚠️ Duplicate message {msg_id} — skipping")
-                return jsonify({"status": "ok"}), 200
-            processed_msgs.add(msg_id)
-            if len(processed_msgs) > 1000:
-                processed_msgs.clear()
-
             user_text = None
 
+            # ── Text message ─────────────────────────────
             if msg_type == "text":
                 user_text = message["text"]["body"]
                 print(f"💬 WhatsApp from {from_number}: {user_text}")
 
+            # ── Voice note ───────────────────────────────
             elif msg_type in ["audio", "voice"]:
                 media_id = message.get("audio", message.get("voice", {})).get("id")
-                if media_id and OPENAI_API_KEY:
+                print(f"🎤 Voice note from {from_number} — transcribing...")
+                if media_id and OPENAI_API_KEY != "PASTE_YOUR_OPENAI_API_KEY_HERE":
                     audio_path = download_whatsapp_audio(media_id)
                     if audio_path:
                         user_text = transcribe_audio(audio_path)
                         if user_text:
+                            print(f"📝 Transcribed: {user_text}")
+                            # Let customer know we heard them
                             send_whatsapp(from_number, "🎤 Got your voice note!")
                         else:
                             send_whatsapp(from_number, "Sorry, I couldn't hear that clearly. Could you type your message? 🙏")
@@ -424,17 +502,12 @@ def handle_webhook():
                 else:
                     send_whatsapp(from_number, "Sorry, voice notes aren't set up yet. Please type your message 🙏")
 
-            if user_text:
-                # ── Owner YES/NO approval ─────────────────────
-                if is_owner(from_number) and aslam_pending:
-                    answer = user_text.strip().upper()
-                    if answer in ["YES", "NO"]:
-                        handle_aslam_approval(answer, from_number)
-                        return jsonify({"status": "ok"}), 200
+            # ── Catalogue request keywords ────────────────
+            catalogue_keywords = ["catalogue", "catalog", "catalog", "products", "all perfumes",
+                                  "product list", "كتالوج", "منتجات", "കാറ്റലോഗ്", "പ്രൊഡക്ട്"]
 
-                # ── Catalogue request ─────────────────────────
-                catalogue_keywords = ["catalogue", "catalog", "products", "all perfumes",
-                                      "product list", "كتالوج", "منتجات", "കാറ്റലോഗ്"]
+            if user_text:
+                # Check for catalogue request
                 if any(k in user_text.lower() for k in catalogue_keywords):
                     send_whatsapp(from_number,
                         "Here's our full Tuxwood Perfumes catalogue 🌿\n\n"
@@ -443,50 +516,76 @@ def handle_webhook():
                     )
                     return jsonify({"status": "ok"}), 200
 
-                # ── AI response ───────────────────────────────
+                # Get AI response
                 reply = get_ai_response(f"wa_{from_number}", user_text)
 
+                # Check if complaint — notify owner immediately
                 complaint_keywords = ["not received", "didn't receive", "where is my order",
-                                      "wrong item", "complaint", "refund", "not delivered",
-                                      "لم يصل", "شكوى", "مشكلة", "കിട്ടിയില്ല", "tracking"]
+                                      "delivery problem", "wrong item", "complaint", "refund",
+                                      "not delivered", "لم يصل", "شكوى", "مشكلة", "തിരികെ",
+                                      "കിട്ടിയില്ല", "delivery status", "track", "tracking"]
                 if any(k in user_text.lower() for k in complaint_keywords):
                     notify_owner(from_number, f"⚠️ COMPLAINT: {user_text}", "WhatsApp")
 
-                escalate_keywords = ["speak to human", "real person", "manager", "call me",
-                                     "تواصل", "مدير", "മനുഷ്യൻ"]
+                # Check if escalation needed
+                escalate_keywords = ["connect me", "speak to human", "real person", "manager",
+                                     "call me", "i need help", "not helpful", "تواصل", "مدير",
+                                     "മനുഷ്യൻ", "ആളെ വിളിക്കൂ"]
                 if any(k in user_text.lower() for k in escalate_keywords):
                     notify_owner(from_number, user_text, "WhatsApp")
 
+                # Send reply
                 send_whatsapp(from_number, reply)
                 print(f"✅ Replied to {from_number}")
 
+        # ── Instagram Message ─────────────────────────────────
         elif "messaging" in entry:
             messaging = entry["messaging"][0]
-            sender_id = messaging["sender"]["id"]
-            msg_text  = messaging.get("message", {}).get("text", "")
+            sender_id  = messaging["sender"]["id"]
+            msg_text   = messaging.get("message", {}).get("text", "")
 
             if msg_text:
+                print(f"💬 Instagram from {sender_id}: {msg_text}")
+
+                # Get AI response
                 reply = get_ai_response(f"ig_{sender_id}", msg_text)
-                escalate_keywords = ["speak to human", "real person", "manager", "تواصل", "مدير"]
+
+                # Check if escalation needed
+                escalate_keywords = ["connect me", "speak to human", "real person",
+                                     "manager", "call me", "تواصل", "مدير"]
                 if any(k in msg_text.lower() for k in escalate_keywords):
                     notify_owner(sender_id, msg_text, "Instagram")
+
+                # Send Instagram reply
                 send_instagram_reply(sender_id, reply)
+                print(f"✅ Replied to Instagram {sender_id}")
 
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"❌ Error processing webhook: {e}")
 
     return jsonify({"status": "ok"}), 200
 
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({
-        "status": "Tuxwood Chatbot running 🌿",
-        "time": datetime.now().isoformat(),
-        "aslam_pending": len(aslam_pending)
-    })
+    return jsonify({"status": "Tuxwood Chatbot is running! 🌿", "time": datetime.now().isoformat()})
 
+
+# ── MAIN ──────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    print("=" * 60)
+    print("  TUXWOOD PERFUMES — AI Sales Chatbot")
+    print("  Platforms: WhatsApp + Instagram")
+    print(f"  Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 60)
+    print("\n📋 SETUP CHECKLIST:")
+    print("  1. ✅ Script running on port 5000")
+    print("  2. ⏳ Run ngrok: ngrok http 5000")
+    print("  3. ⏳ Set webhook URL in Meta Business Manager:")
+    print("     https://YOUR-NGROK-URL/webhook")
+    print(f"  4. ⏳ Verify Token: {WEBHOOK_VERIFY_TOKEN}")
+    print("\n🌐 Health check: http://localhost:5000/health")
+    print("=" * 60)
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)
