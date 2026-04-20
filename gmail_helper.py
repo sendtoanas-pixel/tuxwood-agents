@@ -137,13 +137,25 @@ def read_sales_report(file_path):
 def _read_pdf_report(file_path):
     """
     Extracts table data from a PDF sales report using pdfplumber.
-    Handles multi-page PDFs and repeated header rows.
+    Handles multi-page PDFs, title rows, and repeated header rows.
+    Automatically finds the real header row containing 'Customer Name'.
     """
     try:
         import pdfplumber
 
         all_rows = []
         headers = None
+
+        # Key columns we expect in the real header row
+        HEADER_KEYWORDS = ["customer", "mobile", "name", "phone", "item", "amount", "date"]
+
+        def is_real_header(row):
+            """Check if this row looks like the actual column header row."""
+            row_text = " ".join([str(c).lower().strip() for c in row if c])
+            return any(kw in row_text for kw in HEADER_KEYWORDS)
+
+        def is_empty_row(row):
+            return not any(str(c).strip() for c in row if c)
 
         with pdfplumber.open(file_path) as pdf:
             for page in pdf.pages:
@@ -153,19 +165,31 @@ def _read_pdf_report(file_path):
                         continue
 
                     if headers is None:
-                        # First table — first row is the header
-                        headers = [str(h).strip() if h else "" for h in table[0]]
-                        for row in table[1:]:
-                            if any(cell for cell in row):
+                        # Search for the real header row (skip title rows)
+                        header_idx = None
+                        for i, row in enumerate(table):
+                            if is_real_header(row):
+                                header_idx = i
+                                break
+
+                        if header_idx is None:
+                            # Fallback: use first row as header
+                            header_idx = 0
+
+                        headers = [str(h).strip() if h else f"col_{i}" for i, h in enumerate(table[header_idx])]
+                        # Add data rows after header
+                        for row in table[header_idx + 1:]:
+                            if not is_empty_row(row):
                                 all_rows.append([str(c).strip() if c else "" for c in row])
                     else:
-                        # Subsequent pages — skip if row matches header
+                        # Subsequent pages — skip title/header rows
                         for row in table:
                             row_clean = [str(c).strip() if c else "" for c in row]
-                            if row_clean == headers:
+                            if is_empty_row(row):
+                                continue
+                            if is_real_header(row):
                                 continue  # skip repeated header
-                            if any(cell for cell in row_clean):
-                                all_rows.append(row_clean)
+                            all_rows.append(row_clean)
 
         if headers and all_rows:
             df = pd.DataFrame(all_rows, columns=headers)
