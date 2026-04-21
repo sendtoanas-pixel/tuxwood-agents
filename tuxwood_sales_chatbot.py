@@ -519,6 +519,45 @@ def handle_webhook():
                 # Get AI response
                 reply = get_ai_response(f"wa_{from_number}", user_text)
 
+                # ── Detect order confirmation with address ────
+                address_keywords = [
+                    "villa", "apartment", "flat", "building", "street", "road", "floor",
+                    "near", "behind", "opposite", "next to", "block", "area", "city",
+                    "abu dhabi", "dubai", "sharjah", "ajman", "fujairah", "ras al",
+                    "my address", "deliver to", "send to", "delivery address",
+                    "فيلا", "شقة", "عمارة", "شارع", "منطقة", "أبوظبي", "دبي", "الشارقة"
+                ]
+                order_keywords = [
+                    "i want to order", "i'll take", "i will take", "please send",
+                    "confirm", "confirmed", "yes i want", "i want it", "place order",
+                    "cash on delivery", "cod", "i'll order", "let's go", "book it",
+                    "أريد الطلب", "تأكيد", "أرسل لي", "أبغى"
+                ]
+
+                has_address = any(k in user_text.lower() for k in address_keywords)
+                has_order   = any(k in user_text.lower() for k in order_keywords)
+
+                if has_address or has_order:
+                    # Get conversation history for context
+                    convo = conversations.get(f"wa_{from_number}", [])
+                    history = "\n".join([
+                        f"{'Customer' if m['role'] == 'user' else 'Ozani'}: {m['content']}"
+                        for m in convo[-10:]  # last 10 messages
+                    ])
+
+                    order_alert = (
+                        f"🛒 *NEW ORDER CONFIRMED!*\n"
+                        f"{'━'*28}\n"
+                        f"📱 Customer: +{from_number}\n"
+                        f"🕐 {datetime.now().strftime('%d %b %Y %I:%M %p')}\n\n"
+                        f"💬 *Latest message:*\n{user_text}\n\n"
+                        f"📋 *Conversation summary:*\n{history}\n\n"
+                        f"{'━'*28}\n"
+                        f"⚡ Please confirm and process this order!"
+                    )
+                    send_whatsapp(OWNER_WHATSAPP, order_alert)
+                    print(f"🛒 Order alert sent to owner for {from_number}")
+
                 # Check if complaint — notify owner immediately
                 complaint_keywords = ["not received", "didn't receive", "where is my order",
                                       "delivery problem", "wrong item", "complaint", "refund",
