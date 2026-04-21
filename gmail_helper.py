@@ -138,7 +138,7 @@ def _read_pdf_report(file_path):
     """
     Extracts table data from a PDF sales report using pdfplumber.
     Handles multi-page PDFs, title rows, and repeated header rows.
-    Automatically finds the real header row containing 'Customer Name'.
+    Cleans column names (removes newlines/extra spaces).
     """
     try:
         import pdfplumber
@@ -146,16 +146,29 @@ def _read_pdf_report(file_path):
         all_rows = []
         headers = None
 
-        # Key columns we expect in the real header row
-        HEADER_KEYWORDS = ["customer", "mobile", "name", "phone", "item", "amount", "date"]
+        # Keywords that appear in the real header row
+        HEADER_KEYWORDS = ["customer", "mobile", "invoice", "item", "total", "discount", "cash", "card"]
+
+        def clean_cell(cell):
+            """Clean a cell value — strip newlines and extra spaces."""
+            if cell is None:
+                return ""
+            return " ".join(str(cell).split())  # collapses all whitespace/newlines
 
         def is_real_header(row):
-            """Check if this row looks like the actual column header row."""
-            row_text = " ".join([str(c).lower().strip() for c in row if c])
-            return any(kw in row_text for kw in HEADER_KEYWORDS)
+            """Row is a header if it contains known column keywords."""
+            row_text = " ".join([clean_cell(c).lower() for c in row if c])
+            matched = sum(1 for kw in HEADER_KEYWORDS if kw in row_text)
+            return matched >= 2  # at least 2 keyword matches
 
-        def is_empty_row(row):
-            return not any(str(c).strip() for c in row if c)
+        def is_empty_or_junk(row):
+            """Skip empty rows and page footer rows like 'Page 1 of 13'."""
+            text = " ".join([clean_cell(c).lower() for c in row if c])
+            if not text:
+                return True
+            if text.startswith("page ") and "of" in text:
+                return True
+            return False
 
         with pdfplumber.open(file_path) as pdf:
             for page in pdf.pages:
@@ -165,7 +178,7 @@ def _read_pdf_report(file_path):
                         continue
 
                     if headers is None:
-                        # Search for the real header row (skip title rows)
+                        # Find the real header row
                         header_idx = None
                         for i, row in enumerate(table):
                             if is_real_header(row):
@@ -173,26 +186,32 @@ def _read_pdf_report(file_path):
                                 break
 
                         if header_idx is None:
-                            # Fallback: use first row as header
-                            header_idx = 0
+                            continue  # no header found on this page yet
 
-                        headers = [str(h).strip() if h else f"col_{i}" for i, h in enumerate(table[header_idx])]
+                        # Clean headers — collapse newlines into spaces
+                        headers = [clean_cell(h) if h else f"col_{i}"
+                                   for i, h in enumerate(table[header_idx])]
+
                         # Add data rows after header
                         for row in table[header_idx + 1:]:
-                            if not is_empty_row(row):
-                                all_rows.append([str(c).strip() if c else "" for c in row])
-                    else:
-                        # Subsequent pages — skip title/header rows
-                        for row in table:
-                            row_clean = [str(c).strip() if c else "" for c in row]
-                            if is_empty_row(row):
+                            if is_empty_or_junk(row):
                                 continue
                             if is_real_header(row):
-                                continue  # skip repeated header
-                            all_rows.append(row_clean)
+                                continue
+                            all_rows.append([clean_cell(c) for c in row])
+                    else:
+                        # Subsequent pages — skip header/junk rows
+                        for row in table:
+                            if is_empty_or_junk(row):
+                                continue
+                            if is_real_header(row):
+                                continue
+                            all_rows.append([clean_cell(c) for c in row])
 
         if headers and all_rows:
             df = pd.DataFrame(all_rows, columns=headers)
+            # Remove completely empty rows
+            df = df[df.apply(lambda r: any(v for v in r), axis=1)]
             # Try to convert numeric columns
             for col in df.columns:
                 try:
