@@ -27,17 +27,22 @@ from google.oauth2.service_account import Credentials
 # ============================================================
 # CONFIG
 # ============================================================
-WHATSAPP_TOKEN     = os.environ.get("WHATSAPP_TOKEN",  "")
-PHONE_NUMBER_ID    = os.environ.get("PHONE_NUMBER_ID", "1127995510386994")
-OWNER_NUMBER       = os.environ.get("OWNER_NUMBER",    "971569394846")
-OZANI_URL          = os.environ.get("OZANI_URL", "https://tuxwood-agents-production.up.railway.app")
+WHATSAPP_TOKEN    = os.environ.get("WHATSAPP_TOKEN",  "")
+PHONE_NUMBER_ID   = os.environ.get("PHONE_NUMBER_ID", "1127995510386994")
+OWNER_NUMBER      = os.environ.get("OWNER_NUMBER",    "971569394846")
+OZANI_URL         = os.environ.get("OZANI_URL", "https://tuxwood-agents-production.up.railway.app")
 GOOGLE_CREDENTIALS = os.environ.get("GOOGLE_CREDENTIALS", "")
-SHEET_ID           = "1jJId7XyKsKLpADvtIha83L5-Cy74zFe9"
-LOG_FILE           = "/tmp/aslam_retention_log.json"
+SHEET_ID          = "1h_mhfvNPzu9HCs4bjeFJ0iGFObGl9cLJSqmDLs4_AR4"
+LOG_FILE          = "/tmp/aslam_retention_log.json"
 
-TARGET_COUNTRIES   = ["UAE"]
-TARGET_SEGMENTS    = ["VIP", "VIP, Reactive", "VIP, Non-active", "Active/Regular", "Reactive", "Non-active"]
-MAX_PER_SEGMENT    = 50
+# Only target UAE customers (primary market)
+TARGET_COUNTRIES  = ["UAE"]
+
+# Segments to target (skip New Customer — handled by Shahan)
+TARGET_SEGMENTS   = ["VIP", "VIP, Reactive", "VIP, Non-active", "Active/Regular", "Reactive", "Non-active"]
+
+# Max messages per run (safety limit)
+MAX_PER_SEGMENT   = 50
 # ============================================================
 
 
@@ -54,6 +59,7 @@ def save_log(log):
 
 
 def connect_google_sheet():
+    """Connect to Google Sheets using service account credentials."""
     try:
         creds_dict = json.loads(GOOGLE_CREDENTIALS)
         scopes = [
@@ -71,6 +77,7 @@ def connect_google_sheet():
 
 
 def fetch_contacts(sheet):
+    """Fetch all contacts from Google Sheet."""
     try:
         records = sheet.get_all_records()
         print(f"✅ Fetched {len(records)} contacts from Google Sheets")
@@ -81,6 +88,7 @@ def fetch_contacts(sheet):
 
 
 def generate_message(name, segment):
+    """Generate segment-specific WhatsApp retention message."""
     display_name = name.strip().title() if name and not name.strip().replace(" ", "").isdigit() else "Valued Customer"
 
     if "VIP" in segment and "Non-active" in segment:
@@ -141,7 +149,7 @@ def generate_message(name, segment):
             f"مرحباً {display_name}! 🌿\n"
             f"يسعدنا عودتك إلى تكسوود! نأمل أن عطرك يجلب لك البهجة دائماً. ✨"
         )
-    else:
+    else:  # Non-active
         return (
             f"Hi {display_name}! 🌿\n\n"
             f"We miss you at Tuxwood! It's been a while since your last visit. 🌸\n\n"
@@ -154,7 +162,8 @@ def generate_message(name, segment):
         )
 
 
-def submit_for_approval(pending):
+def submit_for_approval(pending, summary):
+    """Send pending messages to Ozani for owner approval."""
     try:
         r = requests.post(
             f"{OZANI_URL}/aslam/preview",
@@ -162,7 +171,7 @@ def submit_for_approval(pending):
             timeout=15
         )
         if r.status_code == 200:
-            print(f"✅ Sent {len(pending)} messages to Ozani for approval")
+            print(f"✅ Sent {len(pending)} retention messages to Ozani for approval")
         else:
             print(f"❌ Ozani approval failed: {r.status_code}")
     except Exception as e:
@@ -186,6 +195,7 @@ def main():
     print(f"  Date: {today} | Day: {weekday}")
     print("=" * 60)
 
+    # Connect to Google Sheets
     if not GOOGLE_CREDENTIALS:
         print("❌ GOOGLE_CREDENTIALS not set.")
         send_whatsapp("❌ Aslam: GOOGLE_CREDENTIALS not configured in Railway.")
@@ -202,8 +212,9 @@ def main():
         return
 
     log = load_log()
-    week_key = datetime.now().strftime("%Y-W%W")
+    week_key = datetime.now().strftime("%Y-W%W")  # e.g. 2026-W16
 
+    # ── Build pending messages by segment ────────────────────
     pending = []
     segment_counts = {}
 
@@ -213,19 +224,25 @@ def main():
         country = str(contact.get("Country", "")).strip()
         segment = str(contact.get("Customer Segment", "")).strip()
 
+        # Only UAE customers
         if country not in TARGET_COUNTRIES:
             continue
+
+        # Only target segments
         if segment not in TARGET_SEGMENTS:
             continue
 
+        # Skip if already contacted this week
         contact_key = f"{phone}_{week_key}"
         if contact_key in log:
             continue
 
+        # Respect per-segment limit
         seg_count = segment_counts.get(segment, 0)
         if seg_count >= MAX_PER_SEGMENT:
             continue
 
+        # Generate message
         msg = generate_message(name, segment)
         pending.append({
             "type":    "retention",
@@ -243,19 +260,28 @@ def main():
         send_whatsapp(
             f"📱 *Aslam — Weekly Retention*\n"
             f"📅 {today}\n\n"
-            f"✅ All customers already contacted this week.\n"
+            f"✅ All UAE customers already contacted this week.\n"
             f"🤖 Aslam — Retention Agent"
         )
         return
+
+    # ── Summary for owner ─────────────────────────────────────
+    summary = f"📊 *Aslam — Weekly Retention Summary*\n{'━'*28}\n"
+    for seg, count in segment_counts.items():
+        summary += f"• {seg}: {count} messages\n"
+    summary += f"\n*Total: {len(pending)} messages*\n"
+    summary += f"🤖 Aslam — Retention Agent"
 
     print(f"\n📊 Retention breakdown:")
     for seg, count in segment_counts.items():
         print(f"  {seg}: {count}")
     print(f"  Total: {len(pending)}")
 
+    # ── Send to Ozani for approval ────────────────────────────
     print(f"\n📤 Sending to Ozani for owner approval...")
-    submit_for_approval(pending)
+    submit_for_approval(pending, summary)
 
+    # Pre-log contacts
     for item in pending:
         log[item["key"]] = {
             "name":    item["name"],
@@ -265,6 +291,7 @@ def main():
             "date":    today
         }
     save_log(log)
+
     print("✅ Done. Owner will receive WhatsApp approval request.")
 
 
