@@ -46,6 +46,9 @@ client = Anthropic(api_key=ANTHROPIC_API_KEY)
 # In-memory conversation history per user (phone/instagram_id → messages list)
 conversations = {}
 
+# Pending Aslam retention messages (stored in memory, awaiting owner approval)
+pending_aslam_messages = []
+
 # ── TUXWOOD FULL KNOWLEDGE BASE ──────────────────────────────
 KNOWLEDGE_BASE = """
 TUXWOOD PERFUMES — COMPLETE PRODUCT CATALOGUE & CHATBOT KNOWLEDGE BASE
@@ -516,6 +519,28 @@ def handle_webhook():
                                   "product list", "كتالوج", "منتجات", "കാറ്റലോഗ്", "പ്രൊഡക്ട്"]
 
             if user_text:
+                # ── Owner approval commands (from owner's personal number) ──
+                owner_numbers = [OWNER_WHATSAPP, OWNER_WHATSAPP_2,
+                                 OWNER_WHATSAPP.lstrip("0"), OWNER_WHATSAPP_2.lstrip("0")]
+                if from_number in owner_numbers or from_number.endswith(OWNER_WHATSAPP[-9:]) or from_number.endswith(OWNER_WHATSAPP_2[-9:]):
+                    if "approve aslam" in user_text.lower():
+                        global pending_aslam_messages
+                        if pending_aslam_messages:
+                            sent = 0
+                            for item in pending_aslam_messages:
+                                status = send_whatsapp(item["phone"], item["message"])
+                                if status == 200:
+                                    sent += 1
+                            pending_aslam_messages = []
+                            send_whatsapp(from_number, f"✅ Aslam: {sent} retention messages sent to customers!")
+                        else:
+                            send_whatsapp(from_number, "⚠️ No pending Aslam messages found. Run Aslam first.")
+                        return jsonify({"status": "ok"}), 200
+                    elif "cancel aslam" in user_text.lower():
+                        pending_aslam_messages = []
+                        send_whatsapp(from_number, "❌ Aslam: Retention messages cancelled. Nothing was sent.")
+                        return jsonify({"status": "ok"}), 200
+
                 # Check for catalogue request
                 if any(k in user_text.lower() for k in catalogue_keywords):
                     send_whatsapp(from_number,
@@ -614,6 +639,41 @@ def handle_webhook():
     return jsonify({"status": "ok"}), 200
 
 
+@app.route("/aslam/preview", methods=["POST"])
+def aslam_preview():
+    """Receives pending retention messages from Aslam and sends approval request to owner."""
+    global pending_aslam_messages
+    data = request.json
+    pending = data.get("pending", [])
+    pending_aslam_messages = pending
+
+    # Count by segment
+    segment_counts = {}
+    for item in pending:
+        seg = item.get("segment", "General")
+        segment_counts[seg] = segment_counts.get(seg, 0) + 1
+
+    # Build preview message for owner
+    preview = (
+        f"📱 *Aslam — Weekly Retention Preview*\n"
+        f"{'━'*28}\n\n"
+        f"*{len(pending)} messages ready to send:*\n\n"
+    )
+    for seg, cnt in segment_counts.items():
+        preview += f"• {seg}: {cnt} customers\n"
+
+    preview += (
+        f"\n{'━'*28}\n"
+        f"✅ Reply *APPROVE ASLAM* to send all\n"
+        f"❌ Reply *CANCEL ASLAM* to cancel\n\n"
+        f"🤖 Aslam — Retention Agent"
+    )
+
+    send_whatsapp(OWNER_WHATSAPP_2, preview)
+    print(f"📱 Aslam preview sent to owner — {len(pending)} messages pending approval")
+    return jsonify({"status": "ok", "count": len(pending)})
+
+
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "Tuxwood Chatbot is running! 🌿", "time": datetime.now().isoformat()})
@@ -637,3 +697,4 @@ if __name__ == "__main__":
     print("=" * 60)
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)
+
