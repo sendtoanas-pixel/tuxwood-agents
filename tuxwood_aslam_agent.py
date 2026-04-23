@@ -62,6 +62,9 @@ def connect_google_sheet():
     """Connect to Google Sheets using service account credentials."""
     try:
         creds_dict = json.loads(GOOGLE_CREDENTIALS)
+        # Fix escaped newlines in private key (common Railway env var issue)
+        if "private_key" in creds_dict:
+            creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
         scopes = [
             "https://www.googleapis.com/auth/spreadsheets.readonly",
             "https://www.googleapis.com/auth/drive.readonly"
