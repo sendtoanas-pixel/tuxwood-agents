@@ -79,7 +79,9 @@ def get_first_flight_status():
 
 
 def main():
-    mode = sys.argv[1] if len(sys.argv) > 1 else "morning"
+    # Auto-detect morning/evening based on UAE time (UTC+4)
+    hour_uae = (datetime.utcnow().hour + 4) % 24
+    mode = sys.argv[1] if len(sys.argv) > 1 else ("morning" if hour_uae < 12 else "evening")
     today = datetime.now().strftime("%Y-%m-%d")
     log = load_log()
 
@@ -98,8 +100,9 @@ def main():
             df = read_sales_report(report_file)
             df = df.dropna(subset=["Customer Name"])
             total_orders = len(df)
-            if "Net Amount" in df.columns:
-                total_revenue = df["Net Amount"].sum()
+            rev_col = next((c for c in ["Net Amount", "Total Value", "Revenue", "Amount"] if c in df.columns), None)
+            if rev_col:
+                total_revenue = pd.to_numeric(df[rev_col], errors="coerce").sum()
         except Exception as e:
             print(f"Error reading report: {e}")
 
