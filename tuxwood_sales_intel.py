@@ -59,13 +59,15 @@ def main():
         df = df.dropna(subset=["Customer Name"])
 
         total_orders  = len(df)
-        total_revenue = df["Net Amount"].sum() if "Net Amount" in df.columns else 0
+        rev_col = next((c for c in ["Net Amount", "Total Value", "Revenue", "Amount"] if c in df.columns), None)
+        total_revenue = pd.to_numeric(df[rev_col], errors="coerce").sum() if rev_col else 0
         avg_order     = total_revenue / total_orders if total_orders > 0 else 0
 
         # Top products
         top_products = []
-        if "Item Name" in df.columns:
-            counter = Counter(df["Item Name"].dropna())
+        item_col = next((c for c in ["Item Name", "Items", "Product", "Product Name"] if c in df.columns), None)
+        if item_col:
+            counter = Counter(df[item_col].dropna())
             top_products = counter.most_common(5)
 
         # Build report
