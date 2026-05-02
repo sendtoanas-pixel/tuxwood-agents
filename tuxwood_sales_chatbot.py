@@ -11,15 +11,17 @@ Features:
   - Escalates to owner WhatsApp if it can't answer
   - Languages: English + Arabic + Malayalam
   - Voice note recognition using OpenAI Whisper
+  - Live monitoring dashboard at /dashboard
 
 HOW TO RUN:
   1. Install ngrok: https://ngrok.com/download
   2. Run: python tuxwood_sales_chatbot.py
   3. In another terminal: ngrok http 5000
   4. Copy the ngrok URL and set it as your webhook in Meta Business Manager
+  5. Open dashboard: http://localhost:5000/dashboard
 """
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template_string
 import requests
 import json
 import os
@@ -28,16 +30,19 @@ from datetime import datetime
 from anthropic import Anthropic
 
 # ============================================================
-# CONFIG — reads from Railway environment variables
+# CONFIG
 # ============================================================
-WHATSAPP_TOKEN       = os.environ.get("WHATSAPP_TOKEN",      "")
-PHONE_NUMBER_ID      = os.environ.get("PHONE_NUMBER_ID",     "1127995510386994")
-ANTHROPIC_API_KEY    = os.environ.get("ANTHROPIC_API_KEY",   "")
-OPENAI_API_KEY       = os.environ.get("OPENAI_API_KEY",      "")
-WEBHOOK_VERIFY_TOKEN = os.environ.get("WEBHOOK_VERIFY_TOKEN","tuxwood_webhook_2026")
-OWNER_WHATSAPP       = os.environ.get("OWNER_WHATSAPP",      "971528903429")
-OWNER_WHATSAPP_2     = os.environ.get("OWNER_WHATSAPP_2",    "971569394846")
-INSTAGRAM_TOKEN      = WHATSAPP_TOKEN
+WHATSAPP_TOKEN      = "EAAXY3FLEH2kBRFQInkSZC7DnYkgRB1CmkFRmZBbhztgtGy8BLzapcLJgreFQhUWOezUL2tC6m60kqDNjRo4xyLNhvh1e0QwGkycjhp2IyAw1trm7V4afaNvxhjUyZAp2YihXJvdLjDMaGjL6AkJZCBOu4LCAHaGY2k1ZAXpIIqygaRVQvB9uGpZBoZAr2W69QZDZD"
+PHONE_NUMBER_ID     = "1127995510386994"
+ANTHROPIC_API_KEY   = "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"
+OPENAI_API_KEY      = "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"
+WEBHOOK_VERIFY_TOKEN = "tuxwood_webhook_2026"
+OWNER_WHATSAPP      = "971528903429"
+OWNER_WHATSAPP_2    = "971569394846"
+INSTAGRAM_TOKEN     = WHATSAPP_TOKEN
+
+# Chat log file — all conversations saved here permanently
+CHAT_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ozani_chat_log.json")
 # ============================================================
 
 app = Flask(__name__)
@@ -46,8 +51,61 @@ client = Anthropic(api_key=ANTHROPIC_API_KEY)
 # In-memory conversation history per user (phone/instagram_id → messages list)
 conversations = {}
 
-# Pending Aslam retention messages (stored in memory, awaiting owner approval)
-pending_aslam_messages = []
+# Persistent chat log — loaded from file on startup
+# Structure: { user_id: { "phone": ..., "platform": ..., "messages": [...], "last_active": ... } }
+chat_log = {}
+
+
+# ── CHAT LOG HELPERS ──────────────────────────────────────────
+
+def load_chat_log():
+    """Load saved chat log from disk."""
+    global chat_log
+    if os.path.exists(CHAT_LOG_FILE):
+        try:
+            with open(CHAT_LOG_FILE, "r", encoding="utf-8") as f:
+                chat_log = json.load(f)
+        except Exception:
+            chat_log = {}
+    else:
+        chat_log = {}
+
+
+def save_chat_log():
+    """Save chat log to disk."""
+    try:
+        with open(CHAT_LOG_FILE, "w", encoding="utf-8") as f:
+            json.dump(chat_log, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"⚠️  Could not save chat log: {e}")
+
+
+def log_message(user_id, role, text, platform="WhatsApp", phone=None):
+    """Add a message to the persistent chat log."""
+    if user_id not in chat_log:
+        chat_log[user_id] = {
+            "phone": phone or user_id,
+            "platform": platform,
+            "messages": [],
+            "last_active": "",
+            "total_messages": 0
+        }
+
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    chat_log[user_id]["messages"].append({
+        "role": role,        # "customer" or "ozani"
+        "text": text,
+        "time": timestamp
+    })
+    chat_log[user_id]["last_active"] = timestamp
+    chat_log[user_id]["total_messages"] = len(chat_log[user_id]["messages"])
+
+    # Keep last 200 messages per customer in log
+    if len(chat_log[user_id]["messages"]) > 200:
+        chat_log[user_id]["messages"] = chat_log[user_id]["messages"][-200:]
+
+    save_chat_log()
+
 
 # ── TUXWOOD FULL KNOWLEDGE BASE ──────────────────────────────
 KNOWLEDGE_BASE = """
@@ -249,20 +307,11 @@ Example: "This one is AED 89."
 ━━━━━━━━━━━━━━━━━━━━━━
 ORDER CONFIRMATION
 ━━━━━━━━━━━━━━━━━━━━━━
-When customer confirms they want to order (says yes, confirms, wants to buy), send EXACTLY this message — all details at once, not one by one:
-
-"Perfect! 🌿 Please share your delivery details:
-
-📝 *Name:*
-📱 *Contact No:*
-📍 *Address:*
-💳 *Payment:* (Cash on Delivery / Bank Transfer)
-🛍️ *Perfume Name:*
-
-Just reply with all the details and I'll arrange delivery right away! ✨"
-
-→ IMPORTANT: Ask ALL fields at once in this exact format. Never ask one by one.
-→ After customer replies with details, say: "Thank you! Your order is confirmed. Our team will contact you shortly for delivery. 🚚"
+When customer says they want to order:
+"Perfect, I'll arrange delivery for you.
+Please share your:
+Name, Contact number, Location/Address, Perfume name, Quantity, Payment (Cash or Transfer)"
+→ Collect ONE detail at a time, don't ask all at once
 
 ━━━━━━━━━━━━━━━━━━━━━━
 SOFT SELL — VERY IMPORTANT
@@ -345,355 +394,190 @@ If you truly can't answer:
 {KNOWLEDGE_BASE}"""
 
 
-# ── VOICE NOTE HELPERS ───────────────────────────────────────
+# ── DASHBOARD HTML ─────────────────────────────────────────────
+DASHBOARD_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ozani — Live Chat Monitor</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f0f0f; color: #e0e0e0; height: 100vh; display: flex; flex-direction: column; }
 
-def download_whatsapp_audio(media_id):
-    """Download audio file from WhatsApp."""
-    try:
-        # Get media URL
-        url = f"https://graph.facebook.com/v18.0/{media_id}"
-        headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
-        r = requests.get(url, headers=headers)
-        media_url = r.json().get("url")
-        if not media_url:
-            return None
-        # Download the audio
-        audio_response = requests.get(media_url, headers=headers)
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".ogg")
-        tmp.write(audio_response.content)
-        tmp.close()
-        return tmp.name
-    except Exception as e:
-        print(f"❌ Audio download error: {e}")
-        return None
+  /* Header */
+  .header { background: #1a1a1a; border-bottom: 1px solid #2a2a2a; padding: 14px 20px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+  .header-left { display: flex; align-items: center; gap: 12px; }
+  .logo { width: 36px; height: 36px; background: linear-gradient(135deg, #c9a84c, #8b6914); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 18px; }
+  .header h1 { font-size: 18px; font-weight: 600; color: #fff; }
+  .header .subtitle { font-size: 12px; color: #666; margin-top: 2px; }
+  .live-badge { background: #1a3a1a; border: 1px solid #2d5a2d; color: #4caf50; padding: 4px 10px; border-radius: 20px; font-size: 12px; display: flex; align-items: center; gap: 6px; }
+  .live-dot { width: 7px; height: 7px; background: #4caf50; border-radius: 50%; animation: pulse 1.5s infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 
+  /* Stats bar */
+  .stats-bar { background: #141414; border-bottom: 1px solid #222; padding: 10px 20px; display: flex; gap: 24px; flex-shrink: 0; }
+  .stat { display: flex; align-items: center; gap: 8px; }
+  .stat-num { font-size: 20px; font-weight: 700; color: #c9a84c; }
+  .stat-label { font-size: 11px; color: #555; text-transform: uppercase; letter-spacing: 0.5px; }
 
-def transcribe_audio(audio_path):
-    """Transcribe audio using OpenAI Whisper — supports English, Arabic, Malayalam."""
-    try:
-        from openai import OpenAI
-        openai_client = OpenAI(api_key=OPENAI_API_KEY)
-        with open(audio_path, "rb") as audio_file:
-            transcript = openai_client.audio.transcriptions.create(
-                model="whisper-1",
-                file=audio_file,
-            )
-        os.unlink(audio_path)  # Clean up temp file
-        return transcript.text
-    except Exception as e:
-        print(f"❌ Transcription error: {e}")
-        return None
+  /* Main layout */
+  .main { display: flex; flex: 1; overflow: hidden; }
 
+  /* Sidebar */
+  .sidebar { width: 300px; border-right: 1px solid #222; overflow-y: auto; background: #111; flex-shrink: 0; }
+  .sidebar-header { padding: 12px 16px; font-size: 11px; color: #555; text-transform: uppercase; letter-spacing: 1px; border-bottom: 1px solid #1e1e1e; position: sticky; top: 0; background: #111; z-index: 1; }
+  .customer-item { padding: 14px 16px; border-bottom: 1px solid #1a1a1a; cursor: pointer; transition: background 0.15s; }
+  .customer-item:hover { background: #1a1a1a; }
+  .customer-item.active { background: #1e1a0e; border-left: 3px solid #c9a84c; }
+  .customer-name { font-size: 14px; font-weight: 500; color: #ddd; margin-bottom: 4px; display: flex; align-items: center; justify-content: space-between; }
+  .platform-badge { font-size: 10px; padding: 2px 7px; border-radius: 10px; font-weight: 500; }
+  .platform-badge.whatsapp { background: #1a3a1a; color: #4caf50; }
+  .platform-badge.instagram { background: #2a1a2a; color: #e040fb; }
+  .customer-preview { font-size: 12px; color: #555; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 4px; }
+  .customer-time { font-size: 11px; color: #444; }
+  .msg-count { background: #c9a84c; color: #000; font-size: 10px; font-weight: 700; border-radius: 10px; padding: 2px 6px; }
+  .empty-sidebar { padding: 40px 20px; text-align: center; color: #444; font-size: 13px; line-height: 1.6; }
 
-# ── MESSAGE HELPERS ───────────────────────────────────────────
+  /* Chat panel */
+  .chat-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  .chat-header { padding: 14px 20px; border-bottom: 1px solid #222; background: #141414; flex-shrink: 0; }
+  .chat-header .customer-title { font-size: 16px; font-weight: 600; color: #fff; }
+  .chat-header .customer-info { font-size: 12px; color: #555; margin-top: 3px; }
+  .chat-messages { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 12px; }
+  .no-chat { display: flex; align-items: center; justify-content: center; flex: 1; color: #333; font-size: 14px; flex-direction: column; gap: 10px; }
+  .no-chat .icon { font-size: 40px; }
 
-def get_ai_response(user_id, user_message):
-    """Get Claude AI response with conversation history."""
-    if user_id not in conversations:
-        conversations[user_id] = []
+  /* Message bubbles */
+  .msg { max-width: 68%; display: flex; flex-direction: column; gap: 3px; }
+  .msg.customer { align-self: flex-start; }
+  .msg.ozani { align-self: flex-end; }
+  .msg-label { font-size: 10px; color: #444; padding: 0 4px; }
+  .msg.ozani .msg-label { text-align: right; }
+  .bubble { padding: 10px 14px; border-radius: 12px; font-size: 13px; line-height: 1.5; word-wrap: break-word; white-space: pre-wrap; }
+  .msg.customer .bubble { background: #1e1e1e; color: #ccc; border-top-left-radius: 3px; }
+  .msg.ozani .bubble { background: #2a2010; color: #e8d5a0; border-top-right-radius: 3px; border: 1px solid #3a3010; }
+  .msg-time { font-size: 10px; color: #3a3a3a; padding: 0 4px; }
+  .msg.ozani .msg-time { text-align: right; }
 
-    # Add user message to history
-    conversations[user_id].append({"role": "user", "content": user_message})
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 2px; }
+  ::-webkit-scrollbar-thumb:hover { background: #3a3a3a; }
 
-    # Keep last 20 messages only
-    if len(conversations[user_id]) > 20:
-        conversations[user_id] = conversations[user_id][-20:]
+  .refresh-note { font-size: 11px; color: #333; padding: 8px 20px; text-align: right; flex-shrink: 0; border-top: 1px solid #1a1a1a; }
+</style>
+</head>
+<body>
 
-    try:
-        response = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=600,
-            system=SYSTEM_PROMPT,
-            messages=conversations[user_id]
-        )
-        reply = response.content[0].text.strip()
+<div class="header">
+  <div class="header-left">
+    <div class="logo">🌿</div>
+    <div>
+      <h1>Ozani — Live Chat Monitor</h1>
+      <div class="subtitle">Tuxwood Perfumes</div>
+    </div>
+  </div>
+  <div class="live-badge">
+    <div class="live-dot"></div>
+    <span>LIVE</span>
+  </div>
+</div>
 
-        # Add assistant reply to history
-        conversations[user_id].append({"role": "assistant", "content": reply})
+<div class="stats-bar" id="statsBar">
+  <div class="stat"><div class="stat-num" id="totalChats">0</div><div class="stat-label">Total Customers</div></div>
+  <div class="stat"><div class="stat-num" id="totalMessages">0</div><div class="stat-label">Total Messages</div></div>
+  <div class="stat"><div class="stat-num" id="todayChats">0</div><div class="stat-label">Active Today</div></div>
+</div>
 
-        return reply
-    except Exception as e:
-        print(f"Claude API error: {e}")
-        return "Sorry, I'm having a small technical issue. Please try again in a moment! 🙏"
+<div class="main">
+  <div class="sidebar">
+    <div class="sidebar-header">Conversations</div>
+    <div id="customerList"></div>
+  </div>
+  <div class="chat-panel">
+    <div id="chatArea">
+      <div class="no-chat">
+        <div class="icon">💬</div>
+        <div>Select a conversation to view</div>
+      </div>
+    </div>
+  </div>
+</div>
 
+<div class="refresh-note" id="refreshNote">Refreshing every 10 seconds...</div>
 
-def send_whatsapp(to, message):
-    """Send WhatsApp message."""
-    url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
-    headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": to,
-        "type": "text",
-        "text": {"body": message}
-    }
-    r = requests.post(url, headers=headers, json=payload)
-    return r.status_code
+<script>
+let allChats = {};
+let activeUser = null;
+const today = new Date().toISOString().split('T')[0];
 
+function timeAgo(timeStr) {
+  if (!timeStr) return '';
+  const now = new Date();
+  const then = new Date(timeStr.replace(' ', 'T'));
+  const diff = Math.floor((now - then) / 1000);
+  if (diff < 60) return 'just now';
+  if (diff < 3600) return Math.floor(diff/60) + 'm ago';
+  if (diff < 86400) return Math.floor(diff/3600) + 'h ago';
+  return Math.floor(diff/86400) + 'd ago';
+}
 
-def send_instagram_reply(recipient_id, message):
-    """Send Instagram DM reply."""
-    url = f"https://graph.facebook.com/v18.0/me/messages"
-    headers = {"Authorization": f"Bearer {INSTAGRAM_TOKEN}", "Content-Type": "application/json"}
-    payload = {
-        "recipient": {"id": recipient_id},
-        "message": {"text": message}
-    }
-    r = requests.post(url, headers=headers, json=payload)
-    return r.status_code
+function formatPhone(phone) {
+  if (!phone) return 'Unknown';
+  const p = String(phone).replace('wa_', '').replace('ig_', '');
+  if (p.startsWith('971')) return '+' + p;
+  return p;
+}
 
+function renderCustomerList(chats) {
+  const el = document.getElementById('customerList');
+  const users = Object.entries(chats).sort((a, b) => {
+    return (b[1].last_active || '').localeCompare(a[1].last_active || '');
+  });
 
-def notify_owner(customer_id, customer_message, platform):
-    """Notify owner on WhatsApp when escalation is needed."""
-    alert = (
-        f"⚠️ TUXWOOD CHATBOT ESCALATION\n\n"
-        f"Platform: {platform}\n"
-        f"Customer ID: {customer_id}\n"
-        f"Message: {customer_message}\n\n"
-        f"Please reply to this customer directly."
-    )
-    send_whatsapp(OWNER_WHATSAPP, alert)
-    send_whatsapp(OWNER_WHATSAPP_2, alert)
+  if (users.length === 0) {
+    el.innerHTML = '<div class="empty-sidebar">No conversations yet.<br>Waiting for customers to message Ozani 🌿</div>';
+    return;
+  }
 
+  el.innerHTML = users.map(([uid, data]) => {
+    const msgs = data.messages || [];
+    const lastMsg = msgs.length ? msgs[msgs.length - 1] : null;
+    const preview = lastMsg ? lastMsg.text.substring(0, 45) + (lastMsg.text.length > 45 ? '...' : '') : 'No messages';
+    const platform = data.platform || 'WhatsApp';
+    const isActive = uid === activeUser;
+    const phone = formatPhone(data.phone || uid);
+    return `<div class="customer-item ${isActive ? 'active' : ''}" onclick="selectUser('${uid}')">
+      <div class="customer-name">
+        <span>${phone}</span>
+        <div style="display:flex;align-items:center;gap:6px;">
+          <span class="platform-badge ${platform.toLowerCase()}">${platform}</span>
+          <span class="msg-count">${msgs.length}</span>
+        </div>
+      </div>
+      <div class="customer-preview">${escapeHtml(preview)}</div>
+      <div class="customer-time">${timeAgo(data.last_active)}</div>
+    </div>`;
+  }).join('');
+}
 
-# ── WEBHOOK ROUTES ────────────────────────────────────────────
+function renderChat(uid) {
+  const data = allChats[uid];
+  if (!data) return;
+  const msgs = data.messages || [];
+  const phone = formatPhone(data.phone || uid);
+  const platform = data.platform || 'WhatsApp';
 
-@app.route("/webhook", methods=["GET"])
-def verify_webhook():
-    """Meta webhook verification."""
-    mode      = request.args.get("hub.mode")
-    token     = request.args.get("hub.verify_token")
-    challenge = request.args.get("hub.challenge")
-
-    if mode == "subscribe" and token == WEBHOOK_VERIFY_TOKEN:
-        print("✅ Webhook verified!")
-        return challenge, 200
-    return "Forbidden", 403
-
-
-@app.route("/webhook", methods=["POST"])
-def handle_webhook():
-    """Handle incoming WhatsApp & Instagram messages."""
-    data = request.get_json()
-    print(f"\n📨 Incoming webhook: {json.dumps(data, indent=2)[:500]}")
-
-    try:
-        entry = data.get("entry", [{}])[0]
-        changes = entry.get("changes", [{}])[0]
-        value = changes.get("value", {})
-
-        # ── WhatsApp Message ──────────────────────────────────
-        if "messages" in value:
-            message = value["messages"][0]
-            from_number = message.get("from")
-            msg_type    = message.get("type")
-
-            user_text = None
-
-            # ── Text message ─────────────────────────────
-            if msg_type == "text":
-                user_text = message["text"]["body"]
-                print(f"💬 WhatsApp from {from_number}: {user_text}")
-
-            # ── Voice note ───────────────────────────────
-            elif msg_type in ["audio", "voice"]:
-                media_id = message.get("audio", message.get("voice", {})).get("id")
-                print(f"🎤 Voice note from {from_number} — transcribing...")
-                if media_id and OPENAI_API_KEY != "PASTE_YOUR_OPENAI_API_KEY_HERE":
-                    audio_path = download_whatsapp_audio(media_id)
-                    if audio_path:
-                        user_text = transcribe_audio(audio_path)
-                        if user_text:
-                            print(f"📝 Transcribed: {user_text}")
-                            # Let customer know we heard them
-                            send_whatsapp(from_number, "🎤 Got your voice note!")
-                        else:
-                            send_whatsapp(from_number, "Sorry, I couldn't hear that clearly. Could you type your message? 🙏")
-                    else:
-                        send_whatsapp(from_number, "Sorry, I had trouble with your voice note. Could you type it? 🙏")
-                else:
-                    send_whatsapp(from_number, "Sorry, voice notes aren't set up yet. Please type your message 🙏")
-
-            # ── Catalogue request keywords ────────────────
-            catalogue_keywords = ["catalogue", "catalog", "catalog", "products", "all perfumes",
-                                  "product list", "كتالوج", "منتجات", "കാറ്റലോഗ്", "പ്രൊഡക്ട്"]
-
-            if user_text:
-                # ── Owner approval commands (from owner's personal number) ──
-                owner_numbers = [OWNER_WHATSAPP, OWNER_WHATSAPP_2,
-                                 OWNER_WHATSAPP.lstrip("0"), OWNER_WHATSAPP_2.lstrip("0")]
-                if from_number in owner_numbers or from_number.endswith(OWNER_WHATSAPP[-9:]) or from_number.endswith(OWNER_WHATSAPP_2[-9:]):
-                    if "approve aslam" in user_text.lower():
-                        global pending_aslam_messages
-                        if pending_aslam_messages:
-                            sent = 0
-                            for item in pending_aslam_messages:
-                                status = send_whatsapp(item["phone"], item["message"])
-                                if status == 200:
-                                    sent += 1
-                            pending_aslam_messages = []
-                            send_whatsapp(from_number, f"✅ Aslam: {sent} retention messages sent to customers!")
-                        else:
-                            send_whatsapp(from_number, "⚠️ No pending Aslam messages found. Run Aslam first.")
-                        return jsonify({"status": "ok"}), 200
-                    elif "cancel aslam" in user_text.lower():
-                        pending_aslam_messages = []
-                        send_whatsapp(from_number, "❌ Aslam: Retention messages cancelled. Nothing was sent.")
-                        return jsonify({"status": "ok"}), 200
-
-                # Check for catalogue request
-                if any(k in user_text.lower() for k in catalogue_keywords):
-                    send_whatsapp(from_number,
-                        "Here's our full Tuxwood Perfumes catalogue 🌿\n\n"
-                        "https://drive.google.com/file/d/1fkJ2UWe_UY0ctS9W6_HNNCzQl2zYbv8F/view?usp=sharing\n\n"
-                        "Take your time browsing — let me know if anything catches your eye!"
-                    )
-                    return jsonify({"status": "ok"}), 200
-
-                # Get AI response
-                reply = get_ai_response(f"wa_{from_number}", user_text)
-
-                # ── Detect order confirmation with address ────
-                address_keywords = [
-                    "villa", "apartment", "flat", "building", "street", "road", "floor",
-                    "near", "behind", "opposite", "next to", "block", "area", "city",
-                    "abu dhabi", "dubai", "sharjah", "ajman", "fujairah", "ras al",
-                    "my address", "deliver to", "send to", "delivery address",
-                    "فيلا", "شقة", "عمارة", "شارع", "منطقة", "أبوظبي", "دبي", "الشارقة"
-                ]
-                order_keywords = [
-                    "i want to order", "i'll take", "i will take", "please send",
-                    "confirm", "confirmed", "yes i want", "i want it", "place order",
-                    "cash on delivery", "cod", "i'll order", "let's go", "book it",
-                    "أريد الطلب", "تأكيد", "أرسل لي", "أبغى"
-                ]
-
-                has_address = any(k in user_text.lower() for k in address_keywords)
-                has_order   = any(k in user_text.lower() for k in order_keywords)
-
-                if has_address or has_order:
-                    # Get conversation history for context
-                    convo = conversations.get(f"wa_{from_number}", [])
-                    history = "\n".join([
-                        f"{'Customer' if m['role'] == 'user' else 'Ozani'}: {m['content']}"
-                        for m in convo[-10:]  # last 10 messages
-                    ])
-
-                    order_alert = (
-                        f"🛒 *NEW ORDER CONFIRMED!*\n"
-                        f"{'━'*28}\n"
-                        f"📱 Customer: +{from_number}\n"
-                        f"🕐 {datetime.now().strftime('%d %b %Y %I:%M %p')}\n\n"
-                        f"💬 *Latest message:*\n{user_text}\n\n"
-                        f"📋 *Conversation summary:*\n{history}\n\n"
-                        f"{'━'*28}\n"
-                        f"⚡ Please confirm and process this order!"
-                    )
-                    send_whatsapp(OWNER_WHATSAPP, order_alert)
-                    print(f"🛒 Order alert sent to owner for {from_number}")
-
-                # Check if complaint — notify owner immediately
-                complaint_keywords = ["not received", "didn't receive", "where is my order",
-                                      "delivery problem", "wrong item", "complaint", "refund",
-                                      "not delivered", "لم يصل", "شكوى", "مشكلة", "തിരികെ",
-                                      "കിട്ടിയില്ല", "delivery status", "track", "tracking"]
-                if any(k in user_text.lower() for k in complaint_keywords):
-                    notify_owner(from_number, f"⚠️ COMPLAINT: {user_text}", "WhatsApp")
-
-                # Check if escalation needed
-                escalate_keywords = ["connect me", "speak to human", "real person", "manager",
-                                     "call me", "i need help", "not helpful", "تواصل", "مدير",
-                                     "മനുഷ്യൻ", "ആളെ വിളിക്കൂ"]
-                if any(k in user_text.lower() for k in escalate_keywords):
-                    notify_owner(from_number, user_text, "WhatsApp")
-
-                # Send reply
-                send_whatsapp(from_number, reply)
-                print(f"✅ Replied to {from_number}")
-
-        # ── Instagram Message ─────────────────────────────────
-        elif "messaging" in entry:
-            messaging = entry["messaging"][0]
-            sender_id  = messaging["sender"]["id"]
-            msg_text   = messaging.get("message", {}).get("text", "")
-
-            if msg_text:
-                print(f"💬 Instagram from {sender_id}: {msg_text}")
-
-                # Get AI response
-                reply = get_ai_response(f"ig_{sender_id}", msg_text)
-
-                # Check if escalation needed
-                escalate_keywords = ["connect me", "speak to human", "real person",
-                                     "manager", "call me", "تواصل", "مدير"]
-                if any(k in msg_text.lower() for k in escalate_keywords):
-                    notify_owner(sender_id, msg_text, "Instagram")
-
-                # Send Instagram reply
-                send_instagram_reply(sender_id, reply)
-                print(f"✅ Replied to Instagram {sender_id}")
-
-    except Exception as e:
-        print(f"❌ Error processing webhook: {e}")
-
-    return jsonify({"status": "ok"}), 200
-
-
-@app.route("/aslam/preview", methods=["POST"])
-def aslam_preview():
-    """Receives pending retention messages from Aslam and sends approval request to owner."""
-    global pending_aslam_messages
-    data = request.json
-    pending = data.get("pending", [])
-    pending_aslam_messages = pending
-
-    # Count by segment
-    segment_counts = {}
-    for item in pending:
-        seg = item.get("segment", "General")
-        segment_counts[seg] = segment_counts.get(seg, 0) + 1
-
-    # Build preview message for owner
-    preview = (
-        f"📱 *Aslam — Weekly Retention Preview*\n"
-        f"{'━'*28}\n\n"
-        f"*{len(pending)} messages ready to send:*\n\n"
-    )
-    for seg, cnt in segment_counts.items():
-        preview += f"• {seg}: {cnt} customers\n"
-
-    preview += (
-        f"\n{'━'*28}\n"
-        f"✅ Reply *APPROVE ASLAM* to send all\n"
-        f"❌ Reply *CANCEL ASLAM* to cancel\n\n"
-        f"🤖 Aslam — Retention Agent"
-    )
-
-    send_whatsapp(OWNER_WHATSAPP_2, preview)
-    print(f"📱 Aslam preview sent to owner — {len(pending)} messages pending approval")
-    return jsonify({"status": "ok", "count": len(pending)})
-
-
-@app.route("/health", methods=["GET"])
-def health():
-    return jsonify({"status": "Tuxwood Chatbot is running! 🌿", "time": datetime.now().isoformat()})
-
-
-# ── MAIN ──────────────────────────────────────────────────────
-
-if __name__ == "__main__":
-    print("=" * 60)
-    print("  TUXWOOD PERFUMES — AI Sales Chatbot")
-    print("  Platforms: WhatsApp + Instagram")
-    print(f"  Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("=" * 60)
-    print("\n📋 SETUP CHECKLIST:")
-    print("  1. ✅ Script running on port 5000")
-    print("  2. ⏳ Run ngrok: ngrok http 5000")
-    print("  3. ⏳ Set webhook URL in Meta Business Manager:")
-    print("     https://YOUR-NGROK-URL/webhook")
-    print(f"  4. ⏳ Verify Token: {WEBHOOK_VERIFY_TOKEN}")
-    print("\n🌐 Health check: http://localhost:5000/health")
-    print("=" * 60)
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=False)
+  document.getElementById('chatArea').innerHTML = `
+    <div class="chat-header">
+      <div class="customer-title">${phone}</div>
+      <div class="customer-info">${platform} · ${msgs.length} messages · Last active ${timeAgo(data.last_active)}</div>
+    </div>
+    <div class="chat-messages" id="msgContainer">
+      ${msgs.map(m => `
+        <div class="msg ${m.role === 'customer' ? 'customer' : 'ozani'}">
+          <div class="msg-label">${m.role === 'customer' ? '👤 Customer' : '🌿 Ozani'}</div>
+          <div class="bubble">${escapeHtml(m.text)}</div>
+          <div class="msg-time">${m.time 
