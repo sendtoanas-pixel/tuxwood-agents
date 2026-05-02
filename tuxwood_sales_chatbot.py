@@ -72,13 +72,13 @@ RULE: Talk less, understand more, guide slowly. Max 3-4 lines per reply.
 - Human tone, not bot. Ask ONE question, wait for reply.
 - Reply in customer language (Arabic/English/Malayalam).
 - If asked if human: "I am Ozani from Tuxwood Perfumes"
-OPENING: "Welcome to Tuxwood Perfumes\! I am Ozani. Are you shopping for yourself or as a gift?"
+OPENING: "Welcome to Tuxwood Perfumes! I am Ozani. Are you shopping for yourself or as a gift?"
 ORDER: Collect Name, Number, Address, Perfume, Quantity, Payment one at a time.
 DELIVERY: 1 item AED 15. 2+ items FREE.
 COMPLAINTS/TRACKING/WHOLESALE: Refer to +971528903429.
 """ + KNOWLEDGE_BASE
 
-DASHBOARD_HTML = r"""<\!DOCTYPE html>
+DASHBOARD_HTML = r"""<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -135,13 +135,13 @@ body{font-family:sans-serif;background:#0f0f0f;color:#ddd;height:100vh;display:f
 <div class="foot" id="ft">Auto-refreshing every 10s</div>
 <script>
 var chats={},active=null,today=new Date().toISOString().slice(0,10);
-function ago(t){if(\!t)return'';var d=Math.floor((Date.now()-new Date(t.replace(' ','T')))/1000);return d<60?'just now':d<3600?Math.floor(d/60)+'m ago':d<86400?Math.floor(d/3600)+'h ago':Math.floor(d/86400)+'d ago';}
+function ago(t){if(!t)return'';var d=Math.floor((Date.now()-new Date(t.replace(' ','T')))/1000);return d<60?'just now':d<3600?Math.floor(d/60)+'m ago':d<86400?Math.floor(d/3600)+'h ago':Math.floor(d/86400)+'d ago';}
 function ph(p){return String(p||'').replace('wa_','').replace('ig_','').replace(/^971/,'+971')||'Unknown';}
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 function renderSb(){
   var sb=document.getElementById('sb');
   var users=Object.entries(chats).sort(function(a,b){return(b[1].last_active||'').localeCompare(a[1].last_active||'');});
-  if(\!users.length){sb.innerHTML='<div class="empty" style="padding:30px">No chats yet</div>';return;}
+  if(!users.length){sb.innerHTML='<div class="empty" style="padding:30px">No chats yet</div>';return;}
   sb.innerHTML=users.map(function(e){
     var uid=e[0],d=e[1],m=d.messages||[],last=m.length?m[m.length-1]:{};
     var pr=last.text?(last.text.length>38?last.text.slice(0,38)+'...':last.text):'';
@@ -152,7 +152,7 @@ function renderSb(){
   }).join('');
 }
 function renderChat(uid){
-  var d=chats[uid];if(\!d)return;
+  var d=chats[uid];if(!d)return;
   var m=d.messages||[],pl=d.platform||'WhatsApp';
   document.getElementById('cp').innerHTML=
     '<div class="ch"><div class="title">'+ph(d.phone||uid)+'</div><div class="info">'+pl+' &middot; '+m.length+' messages &middot; '+ago(d.last_active)+'</div></div>'
@@ -217,7 +217,7 @@ def get_ai_response(user_id, user_message, platform="WhatsApp", phone=None):
         return reply
     except Exception as e:
         print(f"Claude error: {e}")
-        return "Sorry, small technical issue. Please try again\! 🙏"
+        return "Sorry, small technical issue. Please try again! 🙏"
 
 def send_whatsapp(to, message):
     url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
@@ -264,13 +264,13 @@ def handle_webhook():
                     path = download_whatsapp_audio(media_id)
                     user_text = transcribe_audio(path) if path else None
                     if user_text:
-                        send_whatsapp(from_number, "Got your voice note\!")
+                        send_whatsapp(from_number, "Got your voice note!")
                     else:
                         send_whatsapp(from_number, "Sorry, couldn't hear. Please type? 🙏")
 
             if user_text:
                 if any(k in user_text.lower() for k in CATALOGUE_KW):
-                    reply = "Here is our full Tuxwood Perfumes catalogue:\n\nhttps://drive.google.com/file/d/1fkJ2UWe_UY0ctS9W6_HNNCzQl2zYbv8F/view?usp=sharing\n\nLet me know if anything catches your eye\!"
+                    reply = "Here is our full Tuxwood Perfumes catalogue:\n\nhttps://drive.google.com/file/d/1fkJ2UWe_UY0ctS9W6_HNNCzQl2zYbv8F/view?usp=sharing\n\nLet me know if anything catches your eye!"
                     log_message(f"wa_{from_number}", "customer", user_text, "WhatsApp", from_number)
                     log_message(f"wa_{from_number}", "ozani", reply, "WhatsApp", from_number)
                     send_whatsapp(from_number, reply)
