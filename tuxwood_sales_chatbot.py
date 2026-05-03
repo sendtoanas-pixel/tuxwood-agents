@@ -6,7 +6,7 @@ Dashboard available at /dashboard
 from flask import Flask, request, jsonify, render_template_string
 import requests, json, os, tempfile
 from datetime import datetime
-from anthropic import Anthropic
+# anthropic SDK replaced with direct HTTP
 
 WHATSAPP_TOKEN      = "EAAXY3FLEH2kBRFQInkSZC7DnYkgRB1CmkFRmZBbhztgtGy8BLzapcLJgreFQhUWOezUL2tC6m60kqDNjRo4xyLNhvh1e0QwGkycjhp2IyAw1trm7V4afaNvxhjUyZAp2YihXJvdLjDMaGjL6AkJZCBOu4LCAHaGY2k1ZAXpIIqygaRVQvB9uGpZBoZAr2W69QZDZD"
 PHONE_NUMBER_ID     = "1127995510386994"
@@ -19,7 +19,7 @@ INSTAGRAM_TOKEN     = WHATSAPP_TOKEN
 CHAT_LOG_FILE       = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ozani_chat_log.json")
 
 app    = Flask(__name__)
-client = Anthropic(api_key=ANTHROPIC_API_KEY)
+# client removed - using direct HTTP requests
 conversations = {}
 chat_log = {}
 
@@ -210,8 +210,23 @@ def get_ai_response(user_id, user_message, platform="WhatsApp", phone=None):
     if len(conversations[user_id]) > 20:
         conversations[user_id] = conversations[user_id][-20:]
     try:
-        resp = client.messages.create(model="claude-sonnet-4-6", max_tokens=600, system=SYSTEM_PROMPT, messages=conversations[user_id])
-        reply = resp.content[0].text.strip()
+        api_resp = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json"
+            },
+            json={
+                "model": "claude-haiku-4-5-20251001",
+                "max_tokens": 600,
+                "system": SYSTEM_PROMPT,
+                "messages": conversations[user_id]
+            },
+            timeout=30
+        )
+        api_resp.raise_for_status()
+        reply = api_resp.json()["content"][0]["text"].strip()
         conversations[user_id].append({"role": "assistant", "content": reply})
         log_message(user_id, "ozani", reply, platform=platform, phone=phone or user_id)
         return reply
@@ -293,20 +308,4 @@ def handle_webhook():
                 send_instagram_reply(sender_id, reply)
     except Exception as e:
         print(f"Webhook error: {e}")
-    return jsonify({"status": "ok"}), 200
-
-@app.route("/dashboard")
-def dashboard():
-    return render_template_string(DASHBOARD_HTML)
-
-@app.route("/api/chats")
-def api_chats():
-    return jsonify(chat_log)
-
-@app.route("/health")
-def health():
-    return jsonify({"status": "Ozani running", "conversations": len(chat_log)})
-
-if __name__ == "__main__":
-    print(f"Ozani started. Dashboard: http://localhost:5000/dashboard")
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    return jsonify({"status
