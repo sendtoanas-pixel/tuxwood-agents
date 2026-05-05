@@ -1,10 +1,5 @@
 flask
-gunicorn
 anthropic
 openai
 requests
-pandas
-openpyxl
-pdfplumber
-gspread
-google-auth
+gunicorn
