@@ -308,20 +308,4 @@ def handle_webhook():
                 send_instagram_reply(sender_id, reply)
     except Exception as e:
         print(f"Webhook error: {e}")
-    return jsonify({"status": "ok"}), 200
-
-@app.route("/dashboard")
-def dashboard():
-    return render_template_string(DASHBOARD_HTML)
-
-@app.route("/api/chats")
-def api_chats():
-    return jsonify(chat_log)
-
-@app.route("/health")
-def health():
-    return jsonify({"status": "Ozani running", "conversations": len(chat_log)})
-
-if __name__ == "__main__":
-    print(f"Ozani started. Dashboard: http://localhost:5000/dashboard")
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    return jsonify({"status
