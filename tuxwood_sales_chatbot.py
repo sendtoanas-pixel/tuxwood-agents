@@ -10,7 +10,7 @@ from datetime import datetime
 
 WHATSAPP_TOKEN      = "EAAXY3FLEH2kBRFQInkSZC7DnYkgRB1CmkFRmZBbhztgtGy8BLzapcLJgreFQhUWOezUL2tC6m60kqDNjRo4xyLNhvh1e0QwGkycjhp2IyAw1trm7V4afaNvxhjUyZAp2YihXJvdLjDMaGjL6AkJZCBOu4LCAHaGY2k1ZAXpIIqygaRVQvB9uGpZBoZAr2W69QZDZD"
 PHONE_NUMBER_ID     = "1127995510386994"
-ANTHROPIC_API_KEY   = "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"
+ANTHROPIC_API_KEY   = os.environ.get("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", "") 
 OPENAI_API_KEY      = "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"
 WEBHOOK_VERIFY_TOKEN = "tuxwood_webhook_2026"
 OWNER_WHATSAPP      = "971528903429"
