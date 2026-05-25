@@ -753,6 +753,20 @@ def notify_owner(customer_id, customer_message, platform):
     send_whatsapp(OWNER_WHATSAPP_2, alert)
 
 
+def forward_chat_to_owner(customer_id, customer_msg, ozani_reply, platform):
+    """Forward every customer conversation to owner WhatsApp for live monitoring."""
+    msg = (
+        f"💬 *{platform} — Ozani Chat*\n"
+        f"Customer: {customer_id}\n\n"
+        f"📩 *They said:*\n{customer_msg}\n\n"
+        f"🤖 *Ozani replied:*\n{ozani_reply}"
+    )
+    try:
+        send_whatsapp(OWNER_WHATSAPP, msg)
+    except Exception:
+        pass  # Never let forwarding break the main flow
+
+
 # ── WEBHOOK ROUTES ────────────────────────────────────────────
 
 @app.route("/webhook", methods=["GET"])
@@ -819,6 +833,7 @@ def handle_webhook():
                     log_message(f"wa_{from_number}", "customer", user_text, platform="WhatsApp", phone=from_number)
                     log_message(f"wa_{from_number}", "ozani", reply, platform="WhatsApp", phone=from_number)
                     send_whatsapp(from_number, reply)
+                    forward_chat_to_owner(from_number, user_text, reply, "WhatsApp")
                     return jsonify({"status": "ok"}), 200
 
                 reply = get_ai_response(f"wa_{from_number}", user_text, platform="WhatsApp", phone=from_number)
@@ -837,6 +852,7 @@ def handle_webhook():
                     notify_owner(from_number, user_text, "WhatsApp")
 
                 send_whatsapp(from_number, reply)
+                forward_chat_to_owner(from_number, user_text, reply, "WhatsApp")
                 print(f"✅ Replied to {from_number}")
 
         # ── Instagram Message ─────────────────────────────────
@@ -856,6 +872,7 @@ def handle_webhook():
                     notify_owner(sender_id, msg_text, "Instagram")
 
                 send_instagram_reply(sender_id, reply)
+                forward_chat_to_owner(sender_id, msg_text, reply, "Instagram")
                 print(f"✅ Replied to Instagram {sender_id}")
 
     except Exception as e:
@@ -908,4 +925,17 @@ if __name__ == "__main__":
     print("🌐 Health check: http://localhost:5000/health")
     print("=" * 60)
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=False)
-                                       
+                                       pp + Instagram")
+    print(f"  Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"  Chat log: {CHAT_LOG_FILE}")
+    print(f"  Loaded {len(chat_log)} existing conversations")
+    print("=" * 60)
+    print("\n📋 SETUP CHECKLIST:")
+    print("  1. ✅ Script running on port 5000")
+    print("  2. ⏳ Run ngrok: ngrok http 5000")
+    print("  3. ⏳ Set webhook URL in Meta Business Manager")
+    print(f"  4. ⏳ Verify Token: {WEBHOOK_VERIFY_TOKEN}")
+    print("\n🖥️  Dashboard: http://localhost:5000/dashboard")
+    print("🌐 Health check: http://localhost:5000/health")
+    print("=" * 60)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=False)
