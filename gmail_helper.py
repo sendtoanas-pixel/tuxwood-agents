@@ -19,7 +19,7 @@ from email.header import decode_header
 
 
 GMAIL_USER         = os.environ.get("GMAIL_USER", "sendtoanas@gmail.com")
-GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
+GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "paijshbwffiokrqn")
 SUBJECT_KEYWORD    = "sales report"
 
 ALLOWED_EXTENSIONS = (".pdf", ".xlsx", ".xls")
@@ -79,37 +79,46 @@ def fetch_new_report_from_gmail(unread_only=True):
         raw_email = msg_data[0][1]
         msg = email.message_from_bytes(raw_email)
 
-        # Walk through attachments — accept PDF or Excel
+        # Walk through parts looking for a PDF/Excel file. Fixed 2026-07-19:
+        # this used to require "attachment" in the Content-Disposition header,
+        # but some senders (e.g. forwards that went through Zoho Mail) mark
+        # the PDF as "inline" instead of "attachment" -- the old check would
+        # silently skip a genuinely-present report and report "no PDF or
+        # Excel attachment in it" even though there was one. Now any non-
+        # multipart part with a filename matching ALLOWED_EXTENSIONS is
+        # accepted regardless of its Content-Disposition value.
         for part in msg.walk():
-            content_disposition = str(part.get("Content-Disposition", ""))
-            if "attachment" in content_disposition:
-                filename = part.get_filename()
-                if filename and filename.lower().endswith(ALLOWED_EXTENSIONS):
-                    # Decode filename if needed
-                    decoded = decode_header(filename)
-                    fname = decoded[0][0]
-                    if isinstance(fname, bytes):
-                        fname = fname.decode()
+            if part.get_content_maintype() == "multipart":
+                continue
+            filename = part.get_filename()
+            if not filename or not filename.lower().endswith(ALLOWED_EXTENSIONS):
+                continue
 
-                    # Determine suffix
-                    ext = ".pdf" if filename.lower().endswith(".pdf") else ".xlsx"
+            # Decode filename if needed
+            decoded = decode_header(filename)
+            fname = decoded[0][0]
+            if isinstance(fname, bytes):
+                fname = fname.decode()
 
-                    # Save to temp file
-                    tmp = tempfile.NamedTemporaryFile(
-                        delete=False,
-                        suffix=ext,
-                        prefix="sales_report_"
-                    )
-                    tmp.write(part.get_payload(decode=True))
-                    tmp.close()
+            # Determine suffix
+            ext = ".pdf" if filename.lower().endswith(".pdf") else ".xlsx"
 
-                    # Mark email as READ so it won't be fetched again
-                    if unread_only:
-                        mail.store(latest_id, "+FLAGS", "\\Seen")
+            # Save to temp file
+            tmp = tempfile.NamedTemporaryFile(
+                delete=False,
+                suffix=ext,
+                prefix="sales_report_"
+            )
+            tmp.write(part.get_payload(decode=True))
+            tmp.close()
 
-                    print(f"✅ Downloaded from Gmail: {fname} → {tmp.name}")
-                    mail.logout()
-                    return (tmp.name, email_uid)
+            # Mark email as READ so it won't be fetched again
+            if unread_only:
+                mail.store(latest_id, "+FLAGS", "\\Seen")
+
+            print(f"✅ Downloaded from Gmail: {fname} → {tmp.name}")
+            mail.logout()
+            return (tmp.name, email_uid)
 
         print("⚠️  Email found but no PDF or Excel attachment in it.")
         mail.logout()
