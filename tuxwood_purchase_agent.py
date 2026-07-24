@@ -417,43 +417,28 @@ def forward_to_owner(mtype, name, phone, msg):
     checking the log. Best-effort -- a forwarding failure must never block or
     fail the actual customer send.
 
-    Updated 2026-07-14: tries the pre-approved OWNER_FORWARD_TEMPLATE first
-    (photo header + text body), which bypasses Meta's 24h window. Falls back
-    to a freeform image send (works only within the 24h window) if the
-    template call fails -- e.g. while it's still pending Meta's approval --
-    so nothing regresses in the meantime."""
+    Updated 2026-07-22: switched from the WhatsApp TEMPLATE approach to a
+    plain freeform text message. The template ("shahan_owner_forward") was
+    never approved by Meta -- every single attempt failed with a 404
+    "template does not exist" error, so owner forwards were silently
+    dropped. Plain text is simpler and avoids the photo-upload step, but
+    note it still carries WhatsApp's normal 24-hour customer-service-window
+    rule: OWNER_FORWARD_PHONE must have messaged the Shahan bot number
+    within the last 24h for a freeform message to deliver. If forwards stop
+    arriving again, that's most likely the window closing (send the bot
+    number any WhatsApp message to reopen it), not a code bug. The only way
+    to fully bypass the window is getting a template approved by Meta."""
     label = MTYPE_LABELS.get(mtype, mtype)
-    media_id = get_photo_media_id(mtype)
     caption = "📤 Shahan sent *{}* to {} ({}):\n\n{}".format(label, name, phone, msg)
-
-    try:
-        ok = send_whatsapp_template(
-            OWNER_FORWARD_PHONE,
-            OWNER_FORWARD_TEMPLATE,
-            OWNER_FORWARD_TEMPLATE_LANG,
-            [
-                _sanitize_template_param(label),
-                _sanitize_template_param(name),
-                _sanitize_template_param(phone),
-                _sanitize_template_param(msg),
-            ],
-            header_image_id=media_id,
-        )
-        if ok:
-            return
-    except Exception as e:
-        print("  ⚠️  Template forward errored, falling back to freeform: {}".format(e))
 
     try:
         url = "https://graph.facebook.com/v18.0/{}/messages".format(PHONE_NUMBER_ID)
         headers = {"Authorization": "Bearer {}".format(WHATSAPP_TOKEN), "Content-Type": "application/json"}
-        image_param = {"id": media_id} if media_id else {"link": STORE_PHOTO_URL}
-        image_param["caption"] = caption
         payload = {
             "messaging_product": "whatsapp",
             "to": OWNER_FORWARD_PHONE,
-            "type": "image",
-            "image": image_param
+            "type": "text",
+            "text": {"body": caption}
         }
         r = requests.post(url, headers=headers, json=payload)
         if r.status_code != 200:
@@ -466,8 +451,7 @@ def generate_thankyou(name, items):
     display_name = name if not name.replace(" ", "").isdigit() else "Valued Customer"
     return (
         "Hi {}! \U0001f33f\n\n"
-        "Thanks for choosing Tuxwood. Let's begin your fragrance journey with us ✨\n\n"
-        "شكراً لاختيارك تكسوود. لنبدأ رحلتك العطرية معنا ✨"
+        "Thanks for choosing Tuxwood. Let's begin your fragrance journey with us ✨"
     ).format(display_name)
 
 
@@ -479,14 +463,8 @@ def generate_review_request(name):
         "If you loved the experience, we'd be truly grateful if you could share a quick Google review"
         " -- it helps us discover new creations.\n\n"
         "\U0001f449 {}\n\n"
-        "Tuxwood Perfumes Team ✨\n\n"
-        "---\n"
-        "مرحباً {},\n\n"
-        "نأمل أنك تستمتع بعطرك من تكسوود! \U0001f33f\n"
-        "إذا أعجبك العطر، سيسعدنا كثيراً لو تتركت لنا تقييماً سريعاً على Google.\n\n"
-        "\U0001f449 {}\n\n"
-        "فريق تكسوود للعطور ✨"
-    ).format(display_name, GOOGLE_REVIEW_LINK, display_name, GOOGLE_REVIEW_LINK)
+        "Tuxwood Perfumes Team ✨"
+    ).format(display_name, GOOGLE_REVIEW_LINK)
 
 
 def generate_day3_crosssell(name, items):
