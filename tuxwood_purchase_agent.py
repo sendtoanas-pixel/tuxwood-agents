@@ -47,7 +47,24 @@ OWNER_FORWARD_PHONE = "971569394846"  # Anas's personal number -- added 2026-07-
                                        # (thank you, review request, loyalty
                                        # offer, check-in, cross-sell, VIP) gets
                                        # forwarded here too, for visibility.
-LOG_FILE           = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tuxwood_purchase_log.json")
+# Persistent data directory — set DATA_DIR to a mounted Railway Volume path
+# so the sent-message log survives cron teardown/restarts (same pattern as
+# tuxwood_sales_chatbot.py's DATA_DIR). Falls back to the script's own
+# directory when running locally / no volume is attached.
+DATA_DIR = os.environ.get("DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
+os.makedirs(DATA_DIR, exist_ok=True)
+LOG_FILE           = os.path.join(DATA_DIR, "tuxwood_purchase_log.json")
+
+# One-time seed: if this is a brand-new volume with no log yet, copy in the
+# real dedup history (tuxwood_purchase_log.seed.json, committed alongside
+# this script) instead of starting blank -- starting blank would make the
+# script think NO customer has ever been messaged and re-send thank-you /
+# review-request texts to everyone in the sales history on the first run.
+if not os.path.exists(LOG_FILE):
+    _seed_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tuxwood_purchase_log.seed.json")
+    if os.path.exists(_seed_path):
+        shutil.copy(_seed_path, LOG_FILE)
+        print(f"Seeded {LOG_FILE} from {_seed_path}")
 STORE_PHOTO_URL    = "https://tuxwood-cloud-production.up.railway.app/store-photo"  # generic fallback photo
 
 # Per-message-type photos -- added 2026-07-14 (Anas provided these). Each
