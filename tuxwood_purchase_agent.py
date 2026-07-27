@@ -773,12 +773,6 @@ def run_purchase_agent():
                 "name": name, "phone": phone,
                 "items": items, "date": purchase_date, "key": phone_key
             })
-            # Also queue cross-sell right after review
-            pending.append({
-                "type": "day3_crosssell",
-                "name": name, "phone": phone,
-                "items": items, "date": purchase_date, "key": phone_key
-            })
 
         # Loyalty offer — day 25 since purchase (window: 25-39 days)
         if LOYALTY_OFFER_DAY <= days_since <= LOYALTY_OFFER_DAY + CATCHUP_WINDOW_DAYS and not entry.get("day7_sent"):
@@ -836,10 +830,10 @@ def run_purchase_agent():
     # --auto mode: send directly, no approval needed
     # Updated 2026-07-09 (Anas's request): loyalty offer (day 25) and check-in
     # (day 15) now auto-send too, same as Day 1 thank-you and Day 3 review.
-    # Cross-sell and VIP still require approval.
+    # Cross-sell disabled (2026-07-27, Anas). VIP now auto-sends like everything else.
     auto_mode = "--auto" in sys.argv
     if auto_mode:
-        auto_types = {"day1_thankyou", "day3_review", "day7_loyalty", "day14_checkin"}
+        auto_types = {"day1_thankyou", "day3_review", "day7_loyalty", "day14_checkin", "vip"}
         auto_send  = [m for m in pending if m["type"] in auto_types]
         needs_approval = [m for m in pending if m["type"] not in auto_types]
 
