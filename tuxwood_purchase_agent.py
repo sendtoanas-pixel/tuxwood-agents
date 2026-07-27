@@ -745,6 +745,7 @@ def run_purchase_agent():
     # changed, not the internal labels.
     now_dt = datetime.now()
     CATCHUP_WINDOW_DAYS = 14
+    REVIEW_REQUEST_DAY = 4  # "day 5" since purchase (purchase day counts as day 1)
     LOYALTY_OFFER_DAY = 25
     CHECKIN_DAY = 15
 
@@ -766,8 +767,8 @@ def run_purchase_agent():
         if days_since is None:
             continue
 
-        # Day 3 — Google review (window: 2-16 days since purchase)
-        if 2 <= days_since <= 2 + CATCHUP_WINDOW_DAYS and not entry.get("day3_sent"):
+        # Day 5 — Google review (retimed 2026-07-27, was day 3; window: 4-18 days since purchase)
+        if REVIEW_REQUEST_DAY <= days_since <= REVIEW_REQUEST_DAY + CATCHUP_WINDOW_DAYS and not entry.get("day3_sent"):
             pending.append({
                 "type": "day3_review",
                 "name": name, "phone": phone,
