@@ -467,8 +467,10 @@ def forward_to_owner(mtype, name, phone, msg):
 def generate_thankyou(name, items):
     display_name = name if not name.replace(" ", "").isdigit() else "Valued Customer"
     return (
-        "Hi {}! \U0001f33f\n\n"
-        "Thanks for choosing Tuxwood. Let's begin your fragrance journey with us ✨"
+        "Hi {0}! 🌿\n\n"
+        "Thanks for choosing Tuxwood. Let's begin your fragrance journey with us ✨\n\n"
+        "مرحباً {0}! 🌿\n\n"
+        "شكراً لاختيارك Tuxwood. لنبدأ رحلة عطرك معنا ✨"
     ).format(display_name)
 
 
