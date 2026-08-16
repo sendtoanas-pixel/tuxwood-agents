@@ -851,19 +851,37 @@ def run_purchase_agent():
                 try:
                     url = "https://graph.facebook.com/v18.0/{}/messages".format(PHONE_NUMBER_ID)
                     headers = {"Authorization": "Bearer {}".format(WHATSAPP_TOKEN), "Content-Type": "application/json"}
-                    # Use this message type's dedicated photo (uploaded once,
-                    # cached as a media ID) if we have one; otherwise fall
-                    # back to the generic store photo link. Added 2026-07-14.
-                    media_id = get_photo_media_id(mtype)
-                    image_param = {"id": media_id} if media_id else {"link": STORE_PHOTO_URL}
-                    image_param["caption"] = msg
-                    payload = {
+
+                    # Fixed 2026-08-15: this used to bundle the actual message
+                    # text into an "image" message as the caption. WhatsApp
+                    # accepts an image-with-link/media-id send with a 200 OK
+                    # immediately, then fetches/validates the media
+                    # ASYNCHRONOUSLY -- if that photo step fails for any
+                    # reason (missing/expired media upload, broken fallback
+                    # link, etc.), the ENTIRE message -- text included --
+                    # silently never reaches the customer, even though this
+                    # script already logged "✅ Sent" off the initial 200.
+                    # Confirmed 2026-08-15: customers reported never
+                    # receiving Day 1 messages despite "✅ Sent" logs and
+                    # Meta Insights showing 100% "delivered" (which only
+                    # reflects the API accepting the request, not actual
+                    # media delivery). forward_to_owner()'s copy always
+                    # arrived fine because it's plain text with no photo
+                    # dependency -- that mismatch is what exposed this.
+                    #
+                    # Fix: send the real message content as plain TEXT
+                    # first, the same reliable path forward_to_owner already
+                    # uses, so the words that actually matter are guaranteed
+                    # an attempt on their own. The photo is now a best-effort
+                    # bonus sent separately afterward -- if it fails, the
+                    # customer still got the message.
+                    text_payload = {
                         "messaging_product": "whatsapp",
                         "to": phone,
-                        "type": "image",
-                        "image": image_param
+                        "type": "text",
+                        "text": {"body": msg}
                     }
-                    r = requests.post(url, headers=headers, json=payload)
+                    r = requests.post(url, headers=headers, json=text_payload)
                     if r.status_code == 200:
                         print("  ✅ Sent [{}] -> {} ({})".format(mtype, name, phone))
                         sent += 1
@@ -886,6 +904,28 @@ def run_purchase_agent():
                         sent_key = SENT_FIELD.get(mtype, mtype)
                         log[key]["{}_sent".format(sent_key)] = True
                         log[key]["{}_sent_at".format(sent_key)] = datetime.now().isoformat()
+
+                        # Best-effort photo follow-up (added 2026-08-15,
+                        # replaces the old caption-bundled approach above).
+                        # A failure here must never undo the text send or
+                        # affect sent/failed accounting -- the text already
+                        # carries the actual message.
+                        try:
+                            media_id = get_photo_media_id(mtype)
+                            image_param = {"id": media_id} if media_id else {"link": STORE_PHOTO_URL}
+                            photo_payload = {
+                                "messaging_product": "whatsapp",
+                                "to": phone,
+                                "type": "image",
+                                "image": image_param
+                            }
+                            pr = requests.post(url, headers=headers, json=photo_payload)
+                            if pr.status_code != 200:
+                                print("  ⚠️  Photo follow-up FAILED for {} ({}) -- status {}: {}".format(
+                                    name, mtype, pr.status_code, pr.text[:300]))
+                        except Exception as pe:
+                            print("  ⚠️  Photo follow-up error for {}: {}".format(name, pe))
+
                         forward_to_owner(mtype, name, phone, msg)
                     else:
                         print("  ❌ Failed [{}] -> {} | {}".format(mtype, name, r.json()))
