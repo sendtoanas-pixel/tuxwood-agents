@@ -775,30 +775,11 @@ def run_purchase_agent():
                 "items": items, "date": purchase_date, "key": phone_key
             })
 
-        # Loyalty offer — day 25 since purchase (window: 25-39 days)
-        if LOYALTY_OFFER_DAY <= days_since <= LOYALTY_OFFER_DAY + CATCHUP_WINDOW_DAYS and not entry.get("day7_sent"):
-            purchase_count = get_purchase_count(log, phone)
-            if purchase_count >= 3:
-                # VIP customer
-                pending.append({
-                    "type": "vip",
-                    "name": name, "phone": phone, "count": purchase_count,
-                    "items": items, "date": purchase_date, "key": phone_key
-                })
-            else:
-                pending.append({
-                    "type": "day7_loyalty",
-                    "name": name, "phone": phone,
-                    "items": items, "date": purchase_date, "key": phone_key
-                })
-
-        # Check-in — day 15 since purchase (window: 15-29 days)
-        if CHECKIN_DAY <= days_since <= CHECKIN_DAY + CATCHUP_WINDOW_DAYS and not entry.get("day14_sent"):
-            pending.append({
-                "type": "day14_checkin",
-                "name": name, "phone": phone,
-                "items": items, "date": purchase_date, "key": phone_key
-            })
+        # Loyalty offer (day 25) and Check-in (day 15) — disabled 2026-08-18
+        # (Muhammed's request: only the Day 5 Google review request should
+        # reach customers for now). LOYALTY_OFFER_DAY / CHECKIN_DAY and
+        # get_purchase_count() are left defined, unused, in case this is
+        # re-enabled later -- nothing below this point queues them anymore.
 
     # STEP 3: Build messages and save for approval
     if not pending:
@@ -829,17 +810,20 @@ def run_purchase_agent():
             item["msg"] = generate_review_request(name)
 
     # --auto mode: send directly, no approval needed
-    # Updated 2026-07-09 (Anas's request): loyalty offer (day 25) and check-in
-    # (day 15) now auto-send too, same as Day 1 thank-you and Day 3 review.
-    # Cross-sell disabled (2026-07-27, Anas). VIP now auto-sends like everything else.
+    # Updated 2026-08-18 (Muhammed's request): only the Day 5 Google review
+    # request ("day3_review") should actually reach customers right now.
+    # Day 1 thank-you is still processed (see the skip-branch below) purely
+    # to seed the log entry Day 5's eligibility check depends on, but no
+    # WhatsApp message is sent for it. Loyalty offer / check-in / VIP are no
+    # longer queued at all (see STEP 2 above), so they never reach here.
     auto_mode = "--auto" in sys.argv
     if auto_mode:
-        auto_types = {"day1_thankyou", "day3_review", "day7_loyalty", "day14_checkin", "vip"}
+        auto_types = {"day1_thankyou", "day3_review"}
         auto_send  = [m for m in pending if m["type"] in auto_types]
         needs_approval = [m for m in pending if m["type"] not in auto_types]
 
         if auto_send:
-            print("\n🤖 AUTO MODE — Sending Day 1, Day 3, loyalty offer & check-in messages now...")
+            print("\n🤖 AUTO MODE — Registering Day 1 purchases (silent) and sending Day 5 review requests...")
             sent = 0
             failed = 0
             for item in auto_send:
@@ -848,6 +832,21 @@ def run_purchase_agent():
                 mtype = item["type"]
                 key   = item["key"]
                 msg   = item.get("msg", "")
+
+                # Day 1 thank-you: no customer-facing send (disabled
+                # 2026-08-18) -- just register the purchase in the log so
+                # Day 5's window check has a purchase_date to read. See the
+                # comment above auto_types for why this branch still exists.
+                if mtype == "day1_thankyou":
+                    if key not in log:
+                        log[key] = {"name": name, "phone": phone, "items": item.get("items", ""), "purchase_date": item["date"]}
+                    log[key]["day1_sent"] = True
+                    log[key]["day1_sent_at"] = datetime.now().isoformat()
+                    log[key]["day1_send_skipped_by_design"] = True
+                    print("  ⏭️  Registered (no send) [day1_thankyou] -> {} ({})".format(name, phone))
+                    sent += 1
+                    continue
+
                 try:
                     url = "https://graph.facebook.com/v18.0/{}/messages".format(PHONE_NUMBER_ID)
                     headers = {"Authorization": "Bearer {}".format(WHATSAPP_TOKEN), "Content-Type": "application/json"}
@@ -875,14 +874,27 @@ def run_purchase_agent():
                     # an attempt on their own. The photo is now a best-effort
                     # bonus sent separately afterward -- if it fails, the
                     # customer still got the message.
-                    text_payload = {
-                        "messaging_product": "whatsapp",
-                        "to": phone,
-                        "type": "text",
-                        "text": {"body": msg}
-                    }
-                    r = requests.post(url, headers=headers, json=text_payload)
-                    if r.status_code == 200:
+                    # Day 5 review request -- switched 2026-08-18 from
+                    # freeform text to the approved Meta UTILITY template
+                    # "shahan_day5_review_utility_v2" (confirmed Active +
+                    # Utility in WhatsApp Manager today). Freeform text only
+                    # ever reached customers who'd messaged the bot within
+                    # the last 24h, which a customer 5 days post-purchase
+                    # almost never has -- a template bypasses that window
+                    # entirely (same root cause documented in
+                    # CREATE_DAY5_REVIEW_TEMPLATE.py). Only day3_review
+                    # reaches this code path now (day1_thankyou returns
+                    # earlier above), so no per-type branching is needed.
+                    # The template's review-link button is static (baked
+                    # into the approved template), so no button parameter
+                    # is sent here -- only the {{1}} name.
+                    ok = send_whatsapp_template(
+                        phone,
+                        "shahan_day5_review_utility_v2",
+                        "en_US",
+                        [_sanitize_template_param(name)],
+                    )
+                    if ok:
                         print("  ✅ Sent [{}] -> {} ({})".format(mtype, name, phone))
                         sent += 1
                         if key not in log:
@@ -928,7 +940,9 @@ def run_purchase_agent():
 
                         forward_to_owner(mtype, name, phone, msg)
                     else:
-                        print("  ❌ Failed [{}] -> {} | {}".format(mtype, name, r.json()))
+                        # send_whatsapp_template() already printed the exact
+                        # Meta error above (e.g. template not found/approved).
+                        print("  ❌ Failed [{}] -> {} ({})".format(mtype, name, phone))
                         failed += 1
                 except Exception as e:
                     print("  ❌ Error sending to {}: {}".format(name, e))
